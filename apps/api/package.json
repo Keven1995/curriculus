@@ -8,7 +8,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.scripts.json",
-    "test": "tsx --test src/analyses/analysis-request.test.ts src/analyses/analysis-output.test.ts src/analyses/analysis-service.test.ts src/analyses/configured-analysis-service.test.ts src/analyses/openai-responses-provider.test.ts src/persistence/session-repository.test.ts src/payments/payment-request.test.ts src/payments/mercadopago-pix-provider.test.ts src/payments/pix-payment-service.test.ts src/payments/configured-pix-payment-service.test.ts src/payments/mercadopago-webhook-signature.test.ts src/payments/payment-webhook-service.test.ts src/payments/configured-payment-webhook.test.ts src/server.test.ts",
+    "test": "tsx --test src/analyses/analysis-request.test.ts src/analyses/analysis-output.test.ts src/analyses/analysis-service.test.ts src/analyses/configured-analysis-service.test.ts src/analyses/openai-responses-provider.test.ts src/persistence/session-repository.test.ts src/payments/payment-request.test.ts src/payments/mercadopago-pix-provider.test.ts src/payments/pix-payment-service.test.ts src/payments/configured-pix-payment-service.test.ts src/payments/mercadopago-webhook-signature.test.ts src/payments/payment-webhook-service.test.ts src/payments/configured-payment-webhook.test.ts src/documents/document-content.test.ts src/documents/document-access-token.test.ts src/documents/document-request.test.ts src/documents/document-service.test.ts src/documents/pdf-renderer.test.ts src/documents/private-file-document-storage.test.ts src/documents/configured-document-service.test.ts src/server.test.ts",
     "db:migrate": "tsx scripts/migrate.ts"
   },
   "dependencies": {
@@ -16,10 +16,12 @@
     "dotenv": "^18.0.7",
     "fastify": "^5.3.2",
     "js-tiktoken": "^1.0.21",
+    "pdfkit": "^0.20.2",
     "pg": "^8.23.1"
   },
   "devDependencies": {
     "@types/node": "^22.15.3",
+    "@types/pdfkit": "^0.17.6",
     "@types/pg": "^8.23.1",
     "tsx": "^4.19.3"
   }

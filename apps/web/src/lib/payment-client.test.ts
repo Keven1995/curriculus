@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createPixPayment, PaymentClientError } from "./payment-client";
+import {
+  createFinalDocument,
+  createPixPayment,
+  getPixPaymentStatus,
+  PaymentClientError,
+} from "./payment-client";
 
 test("sends only the payer email to the session Pix endpoint and validates the response", async () => {
   let requestedUrl = "";
@@ -70,6 +75,52 @@ test("rejects malformed charge responses without displaying provider details", a
         expiresAt: "not-a-date",
         qrCode: "",
         qrCodeBase64: "",
+      }), { status: 201 }),
+    }),
+    (error: Error) => error instanceof PaymentClientError && error.code === "INVALID_RESPONSE",
+  );
+});
+
+test("checks payment status from the API without trusting browser-provided status", async () => {
+  let requestedUrl = "";
+  let requestedMethod = "";
+  const status = await getPixPaymentStatus("session-test-id", {
+    apiBaseUrl: "https://api.example.test/",
+    fetcher: async (url, init) => {
+      requestedUrl = String(url);
+      requestedMethod = String(init?.method);
+      return new Response(JSON.stringify({ status: "approved" }), { status: 200 });
+    },
+  });
+
+  assert.equal(requestedUrl, "https://api.example.test/sessions/session-test-id/payments/status");
+  assert.equal(requestedMethod, "GET");
+  assert.equal(status, "approved");
+});
+
+test("requests a PDF using only approved suggestion IDs and rejects unsafe download URLs", async () => {
+  let requestBody: Record<string, unknown> | undefined;
+  const document = await createFinalDocument("session-test-id", ["experience-1"], {
+    apiBaseUrl: "https://api.example.test",
+    fetcher: async (_url, init) => {
+      requestBody = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({
+        format: "pdf",
+        downloadPath: "/documents/session-test-id?token=signed",
+        expiresAt: "2026-01-02T00:00:00.000Z",
+      }), { status: 201 });
+    },
+  });
+
+  assert.deepEqual(requestBody, { approvedSuggestionIds: ["experience-1"] });
+  assert.equal(document.format, "pdf");
+
+  await assert.rejects(
+    createFinalDocument("session-test-id", [], {
+      fetcher: async () => new Response(JSON.stringify({
+        format: "pdf",
+        downloadPath: "https://evil.example/steal",
+        expiresAt: "2026-01-02T00:00:00.000Z",
       }), { status: 201 }),
     }),
     (error: Error) => error instanceof PaymentClientError && error.code === "INVALID_RESPONSE",

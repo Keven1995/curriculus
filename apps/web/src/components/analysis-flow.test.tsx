@@ -175,7 +175,63 @@ test("creates a Pix charge only after the explicit checkout submission", async (
   assert.deepEqual(paymentBody, { payerEmail: "buyer@example.com" });
   assert.ok(screen.getByRole("img", { name: /qr code pix de r\$ 1,99/i }));
   assert.ok(screen.getByDisplayValue("pix-copy-code"));
-  assert.ok(screen.getByText(/webhook pode confirmar a cobrança, mas não haverá liberação do documento/i));
+  assert.ok(screen.getByText(/pagamentos públicos seguem desativados até a validação operacional/i));
+});
+
+test("only offers the final PDF after server confirmation and sends only locally approved IDs", async () => {
+  let documentRequest: Record<string, unknown> | undefined;
+  render(
+    <AnalysisFlow
+      styles={styles}
+      apiBaseUrl="https://api.example.test"
+      fetcher={async (url, init) => {
+        const requestUrl = String(url);
+        if (requestUrl.endsWith("/analyses")) {
+          return new Response(JSON.stringify(apiResponse), { status: 201 });
+        }
+        if (requestUrl.endsWith("/payments/pix")) {
+          return new Response(JSON.stringify({
+            orderId: "order-test-id",
+            amountCents: 199,
+            currency: "BRL",
+            status: "pending",
+            expiresAt: "2026-01-02T00:00:00.000Z",
+            qrCode: "pix-copy-code",
+            qrCodeBase64: "aGVsbG8=",
+          }), { status: 201 });
+        }
+        if (requestUrl.endsWith("/payments/status")) {
+          return new Response(JSON.stringify({ status: "approved" }), { status: 200 });
+        }
+        assert.equal(requestUrl, "https://api.example.test/sessions/session-test-id/documents");
+        documentRequest = JSON.parse(String(init?.body));
+        return new Response(JSON.stringify({
+          format: "pdf",
+          downloadPath: "/documents/session-test-id?token=signed-capability",
+          expiresAt: "2026-01-02T00:00:00.000Z",
+        }), { status: 201 });
+      }}
+    />,
+  );
+
+  fillValidForm();
+  fireEvent.click(screen.getByRole("button", { name: /gerar sugestões/i }));
+  await screen.findByRole("heading", { name: "Revise as sugestões" });
+  fireEvent.click(screen.getByRole("button", { name: "Aprovar sugestão: Experiência" }));
+  fireEvent.change(screen.getByLabelText("E-mail para o pagamento Pix"), {
+    target: { value: "buyer@example.com" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: /gerar código pix de r\$ 1,99/i }));
+  await screen.findByRole("heading", { name: "Pix gerado" });
+
+  assert.equal(screen.queryByRole("button", { name: /gerar currículo final em pdf/i }), null);
+  fireEvent.click(screen.getByRole("button", { name: "Verificar pagamento" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Gerar currículo final em PDF" }));
+
+  const download = await screen.findByRole("link", { name: "Baixar currículo em PDF" });
+  assert.deepEqual(documentRequest, { approvedSuggestionIds: ["suggestion-1"] });
+  assert.equal(download.getAttribute("href"), "https://api.example.test/documents/session-test-id?token=signed-capability");
+  assert.ok(screen.getByText(/sem nova chamada à IA/i));
 });
 
 test("marks an invalid checkout email and does not request a Pix charge", async () => {

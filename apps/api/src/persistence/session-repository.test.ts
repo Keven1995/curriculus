@@ -158,6 +158,37 @@ test("clears source and analysis data after document creation and starts a 24h f
   assert.deepEqual(database.calls[0]!.values, ["session-1", "private/key.pdf"]);
 });
 
+test("loads a generated document only while its private download window is active", async () => {
+  const database = new FakeDatabase();
+  const expiresAt = new Date("2026-01-02T00:00:00.000Z");
+  database.result = {
+    rows: [{ id: "session-1", document_storage_key: "private/key.pdf", expires_at: expiresAt }],
+    rowCount: 1,
+  };
+  const repository = new PostgresSessionRepository(database);
+
+  const document = await repository.findGeneratedDocument("session-1");
+
+  assert.deepEqual(document, { sessionId: "session-1", storageKey: "private/key.pdf", expiresAt });
+  assert.match(database.calls[0]!.sql, /status = 'document_ready'/);
+  assert.match(database.calls[0]!.sql, /expires_at > NOW\(\)/);
+  assert.deepEqual(database.calls[0]!.values, ["session-1"]);
+});
+
+test("lists only active generated document keys for orphan reconciliation", async () => {
+  const database = new FakeDatabase();
+  database.result = {
+    rows: [{ document_storage_key: "key-1.pdf" }, { document_storage_key: null }],
+    rowCount: 2,
+  };
+  const repository = new PostgresSessionRepository(database);
+
+  assert.deepEqual(await repository.findActiveDocumentStorageKeys(), ["key-1.pdf"]);
+  assert.match(database.calls[0]!.sql, /status = 'document_ready'/);
+  assert.match(database.calls[0]!.sql, /expires_at > NOW\(\)/);
+  assert.equal(database.calls[0]!.sql.toLowerCase().includes("resume"), false);
+});
+
 test("creates pending orders with the product's fixed price and without resume data", async () => {
   const database = new FakeDatabase();
   database.result = {
@@ -292,6 +323,34 @@ test("updates payment state idempotently without permitting terminal-state regre
   assert.match(database.calls[0]!.sql, /status = \$2\s+OR status = 'pending'/);
   assert.match(database.calls[0]!.sql, /status = 'approved' AND \$2 = 'refunded'/);
   assert.deepEqual(database.calls[0]!.values, ["123456789", "approved"]);
+});
+
+test("loads payment status for a session without selecting resume or payment contact data", async () => {
+  const database = new FakeDatabase();
+  database.result = {
+    rows: [{
+      id: "order-1",
+      session_id: "session-1",
+      amount_cents: 199,
+      currency: "BRL",
+      status: "approved",
+      provider_payment_id: "123456789",
+      pix_qr_code: "pix-code",
+      pix_qr_code_base64: "base64-code",
+      created_at: new Date("2026-01-01T00:00:00.000Z"),
+      updated_at: new Date("2026-01-01T00:00:00.000Z"),
+      checkout_expires_at: new Date("2026-01-02T00:00:00.000Z"),
+    }],
+    rowCount: 1,
+  };
+  const repository = new PostgresSessionRepository(database);
+
+  const order = await repository.findOrderBySessionId("session-1");
+
+  assert.equal(order?.status, "approved");
+  assert.match(database.calls[0]!.sql, /WHERE session_id = \$1/);
+  assert.equal(database.calls[0]!.sql.toLowerCase().includes("resume"), false);
+  assert.deepEqual(database.calls[0]!.values, ["session-1"]);
 });
 
 test("creates the required Neon schema and foreign-key retention behavior", async () => {

@@ -35,6 +35,12 @@ export type ExpiredDocumentReference = {
   expiresAt: Date;
 };
 
+export type GeneratedDocumentReference = {
+  sessionId: string;
+  storageKey: string;
+  expiresAt: Date;
+};
+
 export type StoredAnalysisSession = CreateAnalysisSession & SessionReference & {
   status: "analysis_ready";
 };
@@ -61,14 +67,17 @@ export interface SessionRepository {
   findActiveSession(id: string): Promise<StoredAnalysisSession | null>;
   deleteExpiredSessions(): Promise<number>;
   findExpiredDocuments(): Promise<ExpiredDocumentReference[]>;
+  findActiveDocumentStorageKeys(): Promise<string[]>;
   deleteExpiredDocumentRecord(id: string): Promise<boolean>;
   markDocumentGenerated(id: string, storageKey: string): Promise<boolean>;
+  findGeneratedDocument(id: string): Promise<GeneratedDocumentReference | null>;
   createPendingOrder(sessionId: string): Promise<OrderRecord | null>;
   savePixPayment(
     orderId: string,
     charge: { providerPaymentId: string; qrCode: string; qrCodeBase64: string },
   ): Promise<boolean>;
   findOrderByProviderPaymentId(providerPaymentId: string): Promise<OrderRecord | null>;
+  findOrderBySessionId(sessionId: string): Promise<OrderRecord | null>;
   attachProviderPaymentId(orderId: string, providerPaymentId: string): Promise<boolean>;
   updateOrderStatusByProviderPaymentId(providerPaymentId: string, status: OrderStatus): Promise<boolean>;
   findOrder(id: string): Promise<OrderRecord | null>;
@@ -233,6 +242,17 @@ export class PostgresSessionRepository implements SessionRepository {
     }));
   }
 
+  async findActiveDocumentStorageKeys(): Promise<string[]> {
+    const result = await this.database.query<SessionRow>(
+      `SELECT document_storage_key
+         FROM analysis_sessions
+        WHERE status = 'document_ready' AND expires_at > NOW()`,
+    );
+    return result.rows.flatMap((row) =>
+      typeof row.document_storage_key === "string" ? [row.document_storage_key] : [],
+    );
+  }
+
   async deleteExpiredDocumentRecord(id: string): Promise<boolean> {
     const result = await this.database.query<SessionRow>(
       `DELETE FROM analysis_sessions
@@ -266,6 +286,22 @@ export class PostgresSessionRepository implements SessionRepository {
       [id, storageKey],
     );
     return result.rowCount > 0;
+  }
+
+  async findGeneratedDocument(id: string): Promise<GeneratedDocumentReference | null> {
+    const result = await this.database.query<SessionRow>(
+      `SELECT id, document_storage_key, expires_at
+         FROM analysis_sessions
+        WHERE id = $1 AND status = 'document_ready' AND expires_at > NOW()`,
+      [id],
+    );
+    const row = result.rows[0];
+    if (!row || typeof row.document_storage_key !== "string") return null;
+    return {
+      sessionId: String(row.id),
+      storageKey: row.document_storage_key,
+      expiresAt: asDate(row.expires_at),
+    };
   }
 
   async createPendingOrder(sessionId: string): Promise<OrderRecord | null> {
@@ -356,6 +392,18 @@ export class PostgresSessionRepository implements SessionRepository {
               created_at, updated_at, checkout_expires_at
          FROM orders WHERE id = $1`,
       [id],
+    );
+    const row = result.rows[0];
+    return row ? mapOrder(row) : null;
+  }
+
+  async findOrderBySessionId(sessionId: string): Promise<OrderRecord | null> {
+    const result = await this.database.query<SessionRow>(
+      `SELECT id, session_id, amount_cents, currency, status,
+              provider_payment_id, pix_qr_code, pix_qr_code_base64,
+              created_at, updated_at, checkout_expires_at
+         FROM orders WHERE session_id = $1`,
+      [sessionId],
     );
     const row = result.rows[0];
     return row ? mapOrder(row) : null;

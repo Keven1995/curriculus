@@ -8,6 +8,14 @@ export type PixPaymentApiResponse = {
   qrCodeBase64: string;
 };
 
+export type PixPaymentStatus = "pending" | "approved" | "rejected" | "expired" | "refunded";
+
+export type FinalDocumentApiResponse = {
+  format: "pdf";
+  downloadPath: string;
+  expiresAt: string;
+};
+
 type PaymentRequestOptions = {
   apiBaseUrl?: string;
   fetcher?: typeof fetch;
@@ -31,6 +39,16 @@ const paymentErrorMessages: Record<string, string> = {
   PAYMENT_FAILED: "Não foi possível gerar o Pix. Tente novamente mais tarde.",
   NETWORK_ERROR: "Não foi possível conectar ao serviço. Verifique sua conexão e tente novamente.",
   INVALID_RESPONSE: "O serviço retornou uma resposta inválida. Tente novamente mais tarde.",
+  PAYMENT_NOT_FOUND: "Não foi possível localizar a cobrança desta análise.",
+  PAYMENT_NOT_APPROVED: "A cobrança ainda não foi aprovada.",
+  PERSISTENCE_NOT_CONFIGURED: "O armazenamento ainda não está configurado neste ambiente.",
+  DOCUMENT_NOT_CONFIGURED: "A geração do currículo ainda não está habilitada neste ambiente.",
+  INVALID_DOCUMENT_REQUEST: "Não foi possível validar as sugestões aprovadas.",
+  INVALID_APPROVED_SUGGESTIONS: "As sugestões aprovadas não correspondem a esta análise.",
+  SESSION_NOT_AVAILABLE: "A análise expirou ou não está mais disponível.",
+  DOCUMENT_STORAGE_UNAVAILABLE: "O documento não pôde ser armazenado. Tente novamente mais tarde.",
+  DOCUMENT_RENDER_FAILED: "Não foi possível montar o PDF. Tente novamente mais tarde.",
+  DOCUMENT_GENERATION_FAILED: "Não foi possível gerar o currículo. Tente novamente mais tarde.",
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -55,6 +73,27 @@ function apiErrorCode(value: unknown): string | undefined {
   return typeof value.error.code === "string" ? value.error.code : undefined;
 }
 
+function baseApiUrl(options: PaymentRequestOptions): string {
+  return (options.apiBaseUrl ?? process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000")
+    .replace(/\/+$/, "");
+}
+
+async function readApiResponse(response: Response): Promise<unknown> {
+  try {
+    return await response.json();
+  } catch {
+    return undefined;
+  }
+}
+
+function throwApiError(payload: unknown): never {
+  const code = apiErrorCode(payload) ?? "PAYMENT_FAILED";
+  throw new PaymentClientError(
+    paymentErrorMessages[code] ?? paymentErrorMessages.PAYMENT_FAILED,
+    code,
+  );
+}
+
 export async function createPixPayment(
   sessionId: string,
   payerEmail: string,
@@ -72,8 +111,7 @@ export async function createPixPayment(
     throw new PaymentClientError("A análise não está mais disponível. Gere uma nova análise.", "INVALID_SESSION");
   }
 
-  const baseUrl = (options.apiBaseUrl ?? process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000")
-    .replace(/\/+$/, "");
+  const baseUrl = baseApiUrl(options);
   const fetcher = options.fetcher ?? fetch;
   let response: Response;
   try {
@@ -89,23 +127,86 @@ export async function createPixPayment(
     throw new PaymentClientError(paymentErrorMessages.NETWORK_ERROR, "NETWORK_ERROR");
   }
 
-  let payload: unknown;
-  try {
-    payload = await response.json();
-  } catch {
-    payload = undefined;
-  }
+  const payload = await readApiResponse(response);
 
-  if (!response.ok) {
-    const code = apiErrorCode(payload) ?? "PAYMENT_FAILED";
-    throw new PaymentClientError(
-      paymentErrorMessages[code] ?? paymentErrorMessages.PAYMENT_FAILED,
-      code,
-    );
-  }
+  if (!response.ok) throwApiError(payload);
   if (!isPaymentResponse(payload)) {
     throw new PaymentClientError(paymentErrorMessages.INVALID_RESPONSE, "INVALID_RESPONSE");
   }
 
   return payload;
+}
+
+export async function getPixPaymentStatus(
+  sessionId: string,
+  options: PaymentRequestOptions = {},
+): Promise<PixPaymentStatus> {
+  if (!sessionId.trim()) throw new PaymentClientError(paymentErrorMessages.INVALID_RESPONSE, "INVALID_SESSION");
+  const fetcher = options.fetcher ?? fetch;
+  let response: Response;
+  try {
+    response = await fetcher(
+      `${baseApiUrl(options)}/sessions/${encodeURIComponent(sessionId)}/payments/status`,
+      { method: "GET" },
+    );
+  } catch {
+    throw new PaymentClientError(paymentErrorMessages.NETWORK_ERROR, "NETWORK_ERROR");
+  }
+
+  const payload = await readApiResponse(response);
+  if (!response.ok) throwApiError(payload);
+  if (
+    !isRecord(payload) ||
+    !["pending", "approved", "rejected", "expired", "refunded"].includes(String(payload.status))
+  ) {
+    throw new PaymentClientError(paymentErrorMessages.INVALID_RESPONSE, "INVALID_RESPONSE");
+  }
+  return payload.status as PixPaymentStatus;
+}
+
+export async function createFinalDocument(
+  sessionId: string,
+  approvedSuggestionIds: readonly string[],
+  options: PaymentRequestOptions = {},
+): Promise<FinalDocumentApiResponse> {
+  if (
+    !sessionId.trim() ||
+    approvedSuggestionIds.length > 100 ||
+    approvedSuggestionIds.some((id) => typeof id !== "string" || !id.trim()) ||
+    new Set(approvedSuggestionIds).size !== approvedSuggestionIds.length
+  ) {
+    throw new PaymentClientError(paymentErrorMessages.INVALID_RESPONSE, "INVALID_DOCUMENT_REQUEST");
+  }
+
+  const fetcher = options.fetcher ?? fetch;
+  let response: Response;
+  try {
+    response = await fetcher(
+      `${baseApiUrl(options)}/sessions/${encodeURIComponent(sessionId)}/documents`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ approvedSuggestionIds }),
+      },
+    );
+  } catch {
+    throw new PaymentClientError(paymentErrorMessages.NETWORK_ERROR, "NETWORK_ERROR");
+  }
+
+  const payload = await readApiResponse(response);
+  if (!response.ok) throwApiError(payload);
+  const expectedPrefix = `/documents/${encodeURIComponent(sessionId)}?token=`;
+  if (
+    !isRecord(payload) ||
+    payload.format !== "pdf" ||
+    typeof payload.downloadPath !== "string" ||
+    !payload.downloadPath.startsWith(expectedPrefix) ||
+    payload.downloadPath.length > 2_048 ||
+    payload.downloadPath.length === expectedPrefix.length ||
+    typeof payload.expiresAt !== "string" ||
+    Number.isNaN(Date.parse(payload.expiresAt))
+  ) {
+    throw new PaymentClientError(paymentErrorMessages.INVALID_RESPONSE, "INVALID_RESPONSE");
+  }
+  return payload as FinalDocumentApiResponse;
 }

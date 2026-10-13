@@ -209,6 +209,9 @@ export function AnalysisFlow({ styles, apiBaseUrl, fetcher }: AnalysisFlowProps)
           />
           <PixCheckout
             sessionId={analysisResponse.sessionId}
+            approvedSuggestionIds={Object.entries(decisions)
+              .filter(([, decision]) => decision === "approved")
+              .map(([id]) => id)}
             styles={styles}
             apiBaseUrl={apiBaseUrl}
             fetcher={fetcher}

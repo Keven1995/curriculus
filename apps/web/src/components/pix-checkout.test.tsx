@@ -16,6 +16,7 @@ test("has no automated WCAG A/AA accessibility violations in the Pix checkout", 
   const { container } = render(
     <PixCheckout
       sessionId="session-test-id"
+      approvedSuggestionIds={[]}
       styles={styles}
       fetcher={async () => new Response()}
     />,

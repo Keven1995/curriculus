@@ -26,6 +26,9 @@ import {
 } from "./payments/configured-payment-webhook.js";
 import { verifyMercadoPagoWebhookSignature } from "./payments/mercadopago-webhook-signature.js";
 import { PaymentWebhookError } from "./payments/payment-webhook-service.js";
+import { createConfiguredDocumentService } from "./documents/configured-document-service.js";
+import { validateDocumentRequest } from "./documents/document-request.js";
+import { DocumentServiceError, type DocumentService } from "./documents/document-service.js";
 
 type AppOptions = {
   webOrigin?: string;
@@ -34,6 +37,7 @@ type AppOptions = {
   sessionRepository?: SessionRepository | null;
   pixPaymentService?: PixPaymentServiceContract | null;
   paymentWebhook?: PaymentWebhookEndpoint | null;
+  documentService?: Pick<DocumentService, "generateDocument" | "downloadDocument" | "deleteExpiredDocuments"> | null;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -69,6 +73,12 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
         ? createConfiguredPaymentWebhook(sessionRepository)
         : undefined
       : options.paymentWebhook ?? undefined;
+  const documentService =
+    options.documentService === undefined
+      ? sessionRepository
+        ? createConfiguredDocumentService(sessionRepository)
+        : undefined
+      : options.documentService ?? undefined;
   const app = Fastify({
     logger: options.logger ?? false,
     bodyLimit: ANALYSIS_REQUEST_LIMITS.bodyBytes,
@@ -91,10 +101,25 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
         app.log.warn({ event: "session_expiry_cleanup_failed" }, "Session cleanup failed");
       }
     };
+    const cleanupExpiredDocuments = async () => {
+      if (!documentService) return;
+      try {
+        const deletedCount = await documentService.deleteExpiredDocuments();
+        if (deletedCount > 0) {
+          app.log.info({ event: "expired_documents_deleted", deletedCount }, "Expired documents removed");
+        }
+      } catch {
+        app.log.warn({ event: "document_expiry_cleanup_failed" }, "Document cleanup failed");
+      }
+    };
 
     app.addHook("onReady", async () => {
       await cleanupExpiredSessions();
-      cleanupTimer = setInterval(() => void cleanupExpiredSessions(), 15 * 60 * 1000);
+      await cleanupExpiredDocuments();
+      cleanupTimer = setInterval(() => {
+        void cleanupExpiredSessions();
+        void cleanupExpiredDocuments();
+      }, 15 * 60 * 1000);
       cleanupTimer.unref();
     });
     app.addHook("onClose", async () => {
@@ -310,6 +335,14 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
         },
       });
     }
+    if (!documentService) {
+      return reply.status(503).send({
+        error: {
+          code: "DOCUMENT_NOT_CONFIGURED",
+          message: "O armazenamento privado do currículo final não está configurado.",
+        },
+      });
+    }
 
     try {
       const payment = await pixPaymentService.createPixPayment(
@@ -357,6 +390,132 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
           code: "PAYMENT_FAILED",
           message: "Não foi possível processar a cobrança Pix.",
         },
+      });
+    }
+  });
+
+  app.get<{ Params: { sessionId: string } }>("/sessions/:sessionId/payments/status", async (request, reply) => {
+    reply.header("cache-control", "no-store");
+    if (!sessionRepository) {
+      return reply.status(503).send({
+        error: { code: "PERSISTENCE_NOT_CONFIGURED", message: "O armazenamento não está configurado." },
+      });
+    }
+
+    try {
+      if (!(await sessionRepository.isReady())) {
+        return reply.status(503).send({
+          error: { code: "PERSISTENCE_UNAVAILABLE", message: "O armazenamento está indisponível." },
+        });
+      }
+      const order = await sessionRepository.findOrderBySessionId(request.params.sessionId);
+      if (!order) {
+        return reply.status(404).send({
+          error: { code: "PAYMENT_NOT_FOUND", message: "Não há cobrança para esta análise." },
+        });
+      }
+      return reply.send({ status: order.status });
+    } catch {
+      request.log.warn({ event: "payment_status_lookup_failed" }, "Payment status lookup failed");
+      return reply.status(503).send({
+        error: { code: "PERSISTENCE_UNAVAILABLE", message: "O armazenamento está indisponível." },
+      });
+    }
+  });
+
+  app.post<{ Params: { sessionId: string } }>("/sessions/:sessionId/documents", async (request, reply) => {
+    const validation = validateDocumentRequest(request.body);
+    if (!validation.success) {
+      return reply.status(400).send({
+        error: {
+          code: "INVALID_DOCUMENT_REQUEST",
+          message: "Envie somente os identificadores das sugestões aprovadas.",
+        },
+      });
+    }
+    if (!documentService) {
+      return reply.status(503).send({
+        error: {
+          code: "DOCUMENT_NOT_CONFIGURED",
+          message: "A geração segura do documento não está configurada neste ambiente.",
+        },
+      });
+    }
+
+    try {
+      const document = await documentService.generateDocument(
+        request.params.sessionId,
+        validation.data.approvedSuggestionIds,
+      );
+      return reply
+        .header("cache-control", "no-store")
+        .header("referrer-policy", "no-referrer")
+        .status(document.created ? 201 : 200)
+        .send({
+        format: document.format,
+        downloadPath: document.downloadPath,
+        expiresAt: document.expiresAt,
+      });
+    } catch (error) {
+      if (error instanceof DocumentServiceError) {
+        const mapping: Record<
+          DocumentServiceError["code"],
+          { statusCode: number; message: string }
+        > = {
+          PERSISTENCE_UNAVAILABLE: { statusCode: 503, message: "O armazenamento está indisponível." },
+          SESSION_NOT_AVAILABLE: { statusCode: 404, message: "A análise expirou ou não está disponível." },
+          PAYMENT_NOT_APPROVED: { statusCode: 409, message: "A cobrança ainda não foi aprovada." },
+          INVALID_APPROVED_SUGGESTIONS: { statusCode: 400, message: "As sugestões aprovadas não são válidas." },
+          DOCUMENT_RENDER_FAILED: { statusCode: 500, message: "Não foi possível montar o PDF." },
+          DOCUMENT_STORAGE_UNAVAILABLE: { statusCode: 503, message: "O documento não pôde ser armazenado." },
+          DOCUMENT_NOT_AVAILABLE: { statusCode: 404, message: "O documento não está disponível." },
+        };
+        const mapped = mapping[error.code];
+        request.log.warn({ event: "document_generation_failed", reason: error.code }, "Document generation failed");
+        return reply.status(mapped.statusCode).send({
+          error: { code: error.code, message: mapped.message },
+        });
+      }
+
+      request.log.error({ event: "document_generation_failed", reason: "unexpected_error" }, "Document generation failed");
+      return reply.status(500).send({
+        error: { code: "DOCUMENT_GENERATION_FAILED", message: "Não foi possível gerar o documento." },
+      });
+    }
+  });
+
+  app.get<{ Params: { sessionId: string }; Querystring: { token?: string } }>("/documents/:sessionId", async (request, reply) => {
+    reply.header("cache-control", "private, no-store, max-age=0").header("referrer-policy", "no-referrer");
+    if (!documentService || typeof request.query.token !== "string") {
+      return reply.status(404).send({
+        error: { code: "DOCUMENT_NOT_AVAILABLE", message: "O documento não está disponível." },
+      });
+    }
+
+    try {
+      const document = await documentService.downloadDocument(request.params.sessionId, request.query.token);
+      return reply
+        .header("content-type", "application/pdf")
+        .header("content-disposition", 'attachment; filename="curriculo.pdf"')
+        .header("cache-control", "private, no-store, max-age=0")
+        .header("referrer-policy", "no-referrer")
+        .header("x-content-type-options", "nosniff")
+        .send(document);
+    } catch (error) {
+      if (error instanceof DocumentServiceError) {
+        if (error.code === "PERSISTENCE_UNAVAILABLE" || error.code === "DOCUMENT_STORAGE_UNAVAILABLE") {
+          return reply.status(503).send({
+            error: { code: error.code, message: "O download não está disponível neste momento." },
+          });
+        }
+        return reply.status(404).send({
+          error: { code: "DOCUMENT_NOT_AVAILABLE", message: "O documento não está disponível." },
+        });
+      }
+
+      request.log.error({ event: "document_download_failed", reason: "unexpected_error" }, "Document download failed");
+      return reply.status(500).send({
+        error: { code: "DOCUMENT_DOWNLOAD_FAILED", message: "Não foi possível baixar o documento." },
       });
     }
   });
