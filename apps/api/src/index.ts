@@ -1,4 +1,7 @@
+import { loadEnvironmentFiles } from "./load-environment.js";
 import { createApp } from "./app.js";
+
+loadEnvironmentFiles();
 
 const app = createApp({ logger: true });
 

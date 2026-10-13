@@ -9,7 +9,7 @@ const validRequest = {
 };
 
 test("keeps the health endpoint available", async (context) => {
-  const app = createApp();
+  const app = createApp({ analysisService: null, sessionRepository: null });
   context.after(() => app.close());
 
   const response = await app.inject({ method: "GET", url: "/health" });
@@ -22,7 +22,7 @@ test("keeps the health endpoint available", async (context) => {
 });
 
 test("returns safe field errors for invalid analysis input", async (context) => {
-  const app = createApp();
+  const app = createApp({ analysisService: null, sessionRepository: null });
   context.after(() => app.close());
 
   const response = await app.inject({
@@ -41,7 +41,7 @@ test("returns safe field errors for invalid analysis input", async (context) => 
 });
 
 test("reports unavailable configuration without echoing the submitted content", async (context) => {
-  const app = createApp({ analysisService: null });
+  const app = createApp({ analysisService: null, sessionRepository: null });
   context.after(() => app.close());
 
   const response = await app.inject({
@@ -57,6 +57,7 @@ test("reports unavailable configuration without echoing the submitted content", 
 
 test("runs the injected analysis service exactly once", async (context) => {
   let calls = 0;
+  let saves = 0;
   const app = createApp({
     analysisService: {
       async analyze() {
@@ -76,6 +77,19 @@ test("runs the injected analysis service exactly once", async (context) => {
         };
       },
     },
+    sessionRepository: {
+      async isReady() {
+        return true;
+      },
+      async createSession() {
+        saves += 1;
+        return {
+          id: "session-test-id",
+          createdAt: new Date("2026-01-01T00:00:00.000Z"),
+          expiresAt: new Date("2026-01-02T00:00:00.000Z"),
+        };
+      },
+    } as never,
   });
   context.after(() => app.close());
 
@@ -85,9 +99,12 @@ test("runs the injected analysis service exactly once", async (context) => {
     payload: validRequest,
   });
 
-  assert.equal(response.statusCode, 200);
+  assert.equal(response.statusCode, 201);
   assert.equal(calls, 1);
+  assert.equal(saves, 1);
+  assert.equal(response.json().sessionId, "session-test-id");
   assert.equal(response.json().usage.totalTokens, 579);
+  assert.equal(response.body.includes(validRequest.resume), false);
 });
 
 test("requires pasted job text before any provider call", async (context) => {
@@ -99,6 +116,7 @@ test("requires pasted job text before any provider call", async (context) => {
         throw new Error("must not be called");
       },
     },
+    sessionRepository: null,
   });
   context.after(() => app.close());
 
@@ -117,8 +135,60 @@ test("requires pasted job text before any provider call", async (context) => {
   assert.equal(calls, 0);
 });
 
+test("does not spend a model call when temporary persistence is unavailable", async (context) => {
+  let calls = 0;
+  const app = createApp({
+    analysisService: {
+      async analyze() {
+        calls += 1;
+        throw new Error("must not be called");
+      },
+    },
+    sessionRepository: null,
+  });
+  context.after(() => app.close());
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/analyses",
+    payload: validRequest,
+  });
+
+  assert.equal(response.statusCode, 503);
+  assert.equal(response.json().error.code, "PERSISTENCE_NOT_CONFIGURED");
+  assert.equal(calls, 0);
+});
+
+test("does not spend a model call before the database schema is ready", async (context) => {
+  let calls = 0;
+  const app = createApp({
+    analysisService: {
+      async analyze() {
+        calls += 1;
+        throw new Error("must not be called");
+      },
+    },
+    sessionRepository: {
+      async isReady() {
+        return false;
+      },
+    } as never,
+  });
+  context.after(() => app.close());
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/analyses",
+    payload: validRequest,
+  });
+
+  assert.equal(response.statusCode, 503);
+  assert.equal(response.json().error.code, "PERSISTENCE_UNAVAILABLE");
+  assert.equal(calls, 0);
+});
+
 test("rejects request bodies larger than 256 KiB", async (context) => {
-  const app = createApp();
+  const app = createApp({ analysisService: null, sessionRepository: null });
   context.after(() => app.close());
 
   const response = await app.inject({

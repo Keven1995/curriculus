@@ -14,11 +14,14 @@ import {
 } from "./analyses/analysis-errors.js";
 import { createConfiguredAnalysisService } from "./analyses/configured-analysis-service.js";
 import type { AnalysisService } from "./analyses/analysis-service.js";
+import { createConfiguredSessionRepository } from "./persistence/postgres-session-repository.js";
+import type { SessionRepository } from "./persistence/session-repository.js";
 
 type AppOptions = {
   webOrigin?: string;
   logger?: boolean;
   analysisService?: AnalysisService | null;
+  sessionRepository?: SessionRepository | null;
 };
 
 const issueMessages: Record<AnalysisRequestIssue["code"], string> = {
@@ -34,6 +37,10 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
     options.analysisService === undefined
       ? createConfiguredAnalysisService()
       : options.analysisService ?? undefined;
+  const sessionRepository =
+    options.sessionRepository === undefined
+      ? createConfiguredSessionRepository()
+      : options.sessionRepository ?? undefined;
   const app = Fastify({
     logger: options.logger ?? false,
     bodyLimit: ANALYSIS_REQUEST_LIMITS.bodyBytes,
@@ -43,6 +50,30 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
   void app.register(cors, {
     origin: options.webOrigin ?? process.env.WEB_ORIGIN ?? "http://localhost:3000",
   });
+
+  if (sessionRepository && options.sessionRepository === undefined) {
+    let cleanupTimer: NodeJS.Timeout | undefined;
+    const cleanupExpiredSessions = async () => {
+      try {
+        const deletedCount = await sessionRepository.deleteExpiredSessions();
+        if (deletedCount > 0) {
+          app.log.info({ event: "expired_sessions_deleted", deletedCount }, "Expired sessions removed");
+        }
+      } catch {
+        app.log.warn({ event: "session_expiry_cleanup_failed" }, "Session cleanup failed");
+      }
+    };
+
+    app.addHook("onReady", async () => {
+      await cleanupExpiredSessions();
+      cleanupTimer = setInterval(() => void cleanupExpiredSessions(), 15 * 60 * 1000);
+      cleanupTimer.unref();
+    });
+    app.addHook("onClose", async () => {
+      if (cleanupTimer) clearInterval(cleanupTimer);
+      await sessionRepository.close?.();
+    });
+  }
 
   app.setErrorHandler((error, _request, reply) => {
     const statusCode =
@@ -128,11 +159,37 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
       });
     }
 
+    if (!sessionRepository) {
+      return reply.status(503).send({
+        error: {
+          code: "PERSISTENCE_NOT_CONFIGURED",
+          message: "O armazenamento temporário ainda não está configurado neste ambiente.",
+        },
+      });
+    }
+
+    if (!(await sessionRepository.isReady())) {
+      return reply.status(503).send({
+        error: {
+          code: "PERSISTENCE_UNAVAILABLE",
+          message: "O armazenamento temporário não está disponível neste momento.",
+        },
+      });
+    }
+
     try {
       const result = await analysisService.analyze(validation.data);
+      const session = await sessionRepository.createSession({
+        jobUrl: validation.data.jobUrl,
+        jobDescription: validation.data.jobDescription,
+        resume: validation.data.resume,
+        analysis: result.analysis,
+        usage: result.usage,
+      });
       request.log.info(
         {
           event: "analysis_completed",
+          sessionId: session.id,
           inputTokens: result.usage.inputTokens,
           outputTokens: result.usage.outputTokens,
           totalTokens: result.usage.totalTokens,
@@ -140,7 +197,11 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
         },
         "Curriculus analysis completed",
       );
-      return reply.status(200).send(result);
+      return reply.status(201).send({
+        sessionId: session.id,
+        expiresAt: session.expiresAt,
+        ...result,
+      });
     } catch (error) {
       if (error instanceof JobDescriptionRequiredError) {
         return reply.status(422).send({
