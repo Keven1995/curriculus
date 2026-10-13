@@ -1,0 +1,24 @@
+node_modules/
+.next/
+dist/
+build/
+coverage/
+.env
+.env.*
+.vercel/
+.turbo/
+*.log
+*.tsbuildinfo
+
+# OpenSpec e configurações OpenCode relacionadas
+/opencode/openspec/
+/opencode/.opencode/
+
+# Documentação (inclui README.md)
+*.md
+
+# Arquivos locais do sistema operacional e editores
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
