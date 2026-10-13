@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test src/lib/intake.test.ts"
+    "test": "tsx --test src/lib/intake.test.ts src/lib/analysis-client.test.ts src/components/analysis-preview.test.tsx src/components/analysis-flow.test.tsx"
   },
   "dependencies": {
     "next": "^15.3.2",
@@ -15,9 +15,13 @@
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "@testing-library/react": "^16.3.3",
+    "@types/jsdom": "^30.0.0",
     "@types/node": "^22.15.3",
     "@types/react": "^19.0.12",
     "@types/react-dom": "^19.0.4",
+    "axe-core": "^4.14.0",
+    "jsdom": "^30.1.2",
     "tsx": "^4.19.3"
   }
 }
