@@ -1,0 +1,26 @@
+{
+  "name": "curriculus",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Monorepo inicial do Curriculus",
+  "workspaces": [
+    "apps/web",
+    "apps/api"
+  ],
+  "scripts": {
+    "dev": "concurrently -n web,api -c cyan,green \"npm run dev --workspace @curriculus/web\" \"npm run dev --workspace @curriculus/api\"",
+    "dev:web": "npm run dev --workspace @curriculus/web",
+    "dev:api": "npm run dev --workspace @curriculus/api",
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "typescript": "^5.8.3"
+  },
+  "overrides": {
+    "next": {
+      "postcss": "8.5.23"
+    }
+  }
+}

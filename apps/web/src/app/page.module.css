@@ -1,0 +1,432 @@
+.page {
+  width: min(100% - 48px, 1080px);
+  margin: 0 auto;
+}
+
+.header {
+  height: 88px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #e5eae6;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: #193e35;
+  font-family: Manrope, sans-serif;
+  font-size: 20px;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.brandMark {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 11px;
+  background: #d8f2e9;
+  color: #24745e;
+  font-size: 18px;
+}
+
+.headerNote {
+  color: #667570;
+  font-size: 13px;
+}
+
+.hero {
+  position: relative;
+  display: flex;
+  min-height: 410px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 48px;
+  padding: 62px 0 66px;
+  border-bottom: 1px solid #e5eae6;
+}
+
+.heroCopy {
+  max-width: 680px;
+}
+
+.eyebrow {
+  margin: 0 0 17px;
+  color: #37836c;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.13em;
+}
+
+.hero h1 {
+  max-width: 690px;
+  margin: 0;
+  color: #1b3731;
+  font-family: Manrope, sans-serif;
+  font-size: clamp(36px, 5vw, 56px);
+  font-weight: 700;
+  letter-spacing: -0.055em;
+  line-height: 1.12;
+}
+
+.intro {
+  max-width: 570px;
+  margin: 20px 0 22px;
+  color: #586b65;
+  font-size: 16px;
+  line-height: 1.7;
+}
+
+.benefits {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  color: #324a43;
+  font-size: 14px;
+  list-style: none;
+}
+
+.benefits li {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.benefits li span {
+  display: inline-grid;
+  width: 19px;
+  height: 19px;
+  place-items: center;
+  border-radius: 50%;
+  background: #e0f3eb;
+  color: #287c63;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.priceCard {
+  display: flex;
+  flex: 0 0 192px;
+  flex-direction: column;
+  gap: 7px;
+  padding: 24px 20px;
+  border: 1px solid #dce9e2;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 12px 32px rgb(28 72 57 / 6%);
+  color: #667570;
+  font-size: 12px;
+  text-align: center;
+}
+
+.priceLabel {
+  color: #405a51;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.priceCard strong {
+  margin: 5px 0 0;
+  color: #1d5948;
+  font-family: Manrope, sans-serif;
+  font-size: 34px;
+  letter-spacing: -0.05em;
+}
+
+.formSection {
+  max-width: 790px;
+  margin: 0 auto;
+  padding: 66px 0 76px;
+}
+
+.sectionHeading {
+  display: flex;
+  align-items: flex-start;
+  gap: 15px;
+  margin-bottom: 30px;
+}
+
+.step {
+  display: grid;
+  flex: 0 0 38px;
+  height: 38px;
+  place-items: center;
+  border-radius: 12px;
+  background: #e3f2eb;
+  color: #34765f;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.sectionHeading h2 {
+  margin: 0 0 6px;
+  color: #1d3932;
+  font-family: Manrope, sans-serif;
+  font-size: 25px;
+  letter-spacing: -0.035em;
+}
+
+.sectionHeading p {
+  margin: 0;
+  color: #687873;
+  font-size: 14px;
+}
+
+.form {
+  display: grid;
+  gap: 23px;
+}
+
+.field {
+  display: grid;
+  gap: 8px;
+}
+
+.field label {
+  color: #294139;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.field label span {
+  color: #82908b;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.field input,
+.field textarea {
+  width: 100%;
+  padding: 13px 14px;
+  border: 1px solid #d4ded8;
+  border-radius: 9px;
+  background: #fff;
+  color: #1f342d;
+  font-size: 14px;
+  line-height: 1.6;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.field input::placeholder,
+.field textarea::placeholder {
+  color: #9aa7a1;
+}
+
+.field input:focus,
+.field textarea:focus {
+  border-color: #5b9c84;
+  box-shadow: 0 0 0 3px rgb(71 142 116 / 12%);
+  outline: none;
+}
+
+.field [aria-invalid="true"] {
+  border-color: #bf4f4f;
+}
+
+.field textarea {
+  min-height: 112px;
+  resize: vertical;
+}
+
+.field:nth-of-type(3) textarea {
+  min-height: 190px;
+}
+
+.help,
+.error {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.help {
+  color: #75847d;
+}
+
+.error {
+  color: #a33232;
+  font-weight: 600;
+}
+
+.privacyNotice {
+  display: flex;
+  gap: 13px;
+  padding: 18px;
+  border: 1px solid #d7e9df;
+  border-radius: 12px;
+  background: #eef7f1;
+}
+
+.privacyIcon {
+  display: grid;
+  flex: 0 0 23px;
+  height: 23px;
+  place-items: center;
+  border-radius: 50%;
+  background: #d5ecdf;
+  color: #28765c;
+  font-family: Georgia, serif;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.privacyNotice h3 {
+  margin: 1px 0 7px;
+  color: #294b3f;
+  font-size: 13px;
+}
+
+.privacyNotice p {
+  margin: 0;
+  color: #536b60;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.privacyNotice .prototypeNote {
+  margin-top: 8px;
+  color: #345f4d;
+  font-weight: 700;
+}
+
+.consentField {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  color: #465c53;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.consentField input {
+  flex: 0 0 17px;
+  width: 17px;
+  height: 17px;
+  margin: 1px 0 0;
+  accent-color: #358367;
+}
+
+.consentField input[aria-invalid="true"] {
+  outline: 2px solid #bf4f4f;
+  outline-offset: 2px;
+}
+
+.submitButton {
+  display: flex;
+  min-height: 52px;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border: 0;
+  border-radius: 9px;
+  background: #246c55;
+  color: #fff;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 700;
+  transition: background 140ms ease, transform 140ms ease;
+}
+
+.submitButton:hover {
+  transform: translateY(-1px);
+  background: #1d5b47;
+}
+
+.submitNote,
+.status {
+  margin: -14px 0 0;
+  color: #718079;
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.status {
+  min-height: 18px;
+  margin-top: -8px;
+  color: #28765c;
+  font-weight: 600;
+}
+
+.footer {
+  display: flex;
+  min-height: 75px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  border-top: 1px solid #e5eae6;
+  color: #75827d;
+  font-size: 12px;
+}
+
+.footer a {
+  color: #36765f;
+  text-underline-offset: 3px;
+}
+
+@media (max-width: 760px) {
+  .page {
+    width: min(100% - 36px, 600px);
+  }
+
+  .header {
+    height: 72px;
+  }
+
+  .hero {
+    min-height: auto;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 28px;
+    padding: 48px 0;
+  }
+
+  .hero h1 {
+    font-size: clamp(35px, 10vw, 48px);
+  }
+
+  .intro {
+    font-size: 15px;
+  }
+
+  .priceCard {
+    width: 100%;
+    flex-basis: auto;
+    align-items: center;
+  }
+
+  .formSection {
+    padding: 48px 0 56px;
+  }
+}
+
+@media (max-width: 440px) {
+  .page {
+    width: min(100% - 28px, 600px);
+  }
+
+  .headerNote {
+    font-size: 11px;
+  }
+
+  .sectionHeading h2 {
+    font-size: 21px;
+  }
+
+  .field label span {
+    display: block;
+    margin-top: 3px;
+  }
+
+  .footer {
+    align-items: flex-start;
+    flex-direction: column;
+    justify-content: center;
+    padding: 17px 0;
+  }
+}
