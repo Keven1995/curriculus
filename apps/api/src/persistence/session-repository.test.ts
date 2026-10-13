@@ -102,6 +102,35 @@ test("loads only active analysis sessions", async () => {
   assert.equal(database.calls[0]!.values[0], "4e4f8a8c-7c1f-4fa7-a5a5-83eb983437ea");
 });
 
+test("loads only a session state and document key for a deletion request", async () => {
+  const database = new FakeDatabase();
+  database.result = {
+    rows: [{ id: "session-1", status: "document_ready", document_storage_key: "private/key.pdf" }],
+    rowCount: 1,
+  };
+  const repository = new PostgresSessionRepository(database);
+
+  assert.deepEqual(await repository.findSessionDeletionReference("session-1"), {
+    sessionId: "session-1",
+    status: "document_ready",
+    documentStorageKey: "private/key.pdf",
+  });
+  assert.equal(database.calls[0]!.sql.toLowerCase().includes("resume"), false);
+  assert.equal(database.calls[0]!.sql.toLowerCase().includes("analysis_result"), false);
+});
+
+test("deletes only the expected session state and leaves financial records to the foreign key policy", async () => {
+  const database = new FakeDatabase();
+  database.result = { rows: [{ id: "session-1" }], rowCount: 1 };
+  const repository = new PostgresSessionRepository(database);
+
+  assert.equal(await repository.deleteSessionData("session-1", "document_ready", "private/key.pdf"), true);
+  assert.match(database.calls[0]!.sql, /DELETE FROM analysis_sessions/);
+  assert.match(database.calls[0]!.sql, /document_storage_key IS NOT DISTINCT FROM \$3/);
+  assert.equal(database.calls[0]!.sql.toLowerCase().includes("delete from orders"), false);
+  assert.deepEqual(database.calls[0]!.values, ["session-1", "document_ready", "private/key.pdf"]);
+});
+
 test("deletes expired session rows and detaches their financial orders", async () => {
   const database = new FakeDatabase();
   database.result = { rows: [], rowCount: 3 };

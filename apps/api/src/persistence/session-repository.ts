@@ -41,6 +41,12 @@ export type GeneratedDocumentReference = {
   expiresAt: Date;
 };
 
+export type SessionDeletionReference = {
+  sessionId: string;
+  status: "analysis_ready" | "document_ready";
+  documentStorageKey: string | null;
+};
+
 export type StoredAnalysisSession = CreateAnalysisSession & SessionReference & {
   status: "analysis_ready";
 };
@@ -65,6 +71,12 @@ export interface SessionRepository {
   isReady(): Promise<boolean>;
   createSession(input: CreateAnalysisSession): Promise<SessionReference>;
   findActiveSession(id: string): Promise<StoredAnalysisSession | null>;
+  findSessionDeletionReference(id: string): Promise<SessionDeletionReference | null>;
+  deleteSessionData(
+    id: string,
+    expectedStatus: SessionDeletionReference["status"],
+    expectedStorageKey: string | null,
+  ): Promise<boolean>;
   deleteExpiredSessions(): Promise<number>;
   findExpiredDocuments(): Promise<ExpiredDocumentReference[]>;
   findActiveDocumentStorageKeys(): Promise<string[]>;
@@ -217,6 +229,36 @@ export class PostgresSessionRepository implements SessionRepository {
       createdAt: asDate(row.created_at),
       expiresAt: asDate(row.expires_at),
     };
+  }
+
+  async findSessionDeletionReference(id: string): Promise<SessionDeletionReference | null> {
+    const result = await this.database.query<SessionRow>(
+      `SELECT id, status, document_storage_key
+         FROM analysis_sessions WHERE id = $1`,
+      [id],
+    );
+    const row = result.rows[0];
+    if (!row || (row.status !== "analysis_ready" && row.status !== "document_ready")) return null;
+    return {
+      sessionId: String(row.id),
+      status: row.status,
+      documentStorageKey: typeof row.document_storage_key === "string" ? row.document_storage_key : null,
+    };
+  }
+
+  async deleteSessionData(
+    id: string,
+    expectedStatus: SessionDeletionReference["status"],
+    expectedStorageKey: string | null,
+  ): Promise<boolean> {
+    const result = await this.database.query<SessionRow>(
+      `DELETE FROM analysis_sessions
+        WHERE id = $1 AND status = $2
+          AND document_storage_key IS NOT DISTINCT FROM $3
+        RETURNING id`,
+      [id, expectedStatus, expectedStorageKey],
+    );
+    return result.rowCount > 0;
   }
 
   async deleteExpiredSessions(): Promise<number> {

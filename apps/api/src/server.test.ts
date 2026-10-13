@@ -5,6 +5,7 @@ import { createApp } from "./app.js";
 import { PixPaymentError } from "./payments/payment-errors.js";
 import { PaymentWebhookError } from "./payments/payment-webhook-service.js";
 import { DocumentServiceError } from "./documents/document-service.js";
+import { DataDeletionServiceError } from "./privacy/data-deletion-service.js";
 
 const validRequest = {
   jobDescription: "Vaga de pessoa desenvolvedora",
@@ -33,6 +34,79 @@ test("keeps the health endpoint available", async (context) => {
   assert.deepEqual(response.json(), {
     status: "ok",
     service: "curriculus-api",
+  });
+});
+
+test("deletes a session's data through an idempotent, bodyless endpoint", async (context) => {
+  let deletedSessionId = "";
+  const app = createApp({
+    analysisService: null,
+    sessionRepository: null,
+    dataDeletionService: {
+      async deleteSessionData(sessionId: string) {
+        deletedSessionId = sessionId;
+        return "deleted" as const;
+      },
+    },
+  });
+  context.after(() => app.close());
+
+  const response = await app.inject({
+    method: "DELETE",
+    url: "/sessions/4e4f8a8c-7c1f-4fa7-a5a5-83eb983437ea/data",
+  });
+
+  assert.equal(response.statusCode, 204);
+  assert.equal(response.body, "");
+  assert.equal(response.headers["cache-control"], "no-store");
+  assert.equal(deletedSessionId, "4e4f8a8c-7c1f-4fa7-a5a5-83eb983437ea");
+});
+
+test("maps unavailable deletion storage to a safe retryable response", async (context) => {
+  const app = createApp({
+    analysisService: null,
+    sessionRepository: null,
+    dataDeletionService: {
+      async deleteSessionData() {
+        throw new DataDeletionServiceError("DOCUMENT_STORAGE_UNAVAILABLE");
+      },
+    },
+  });
+  context.after(() => app.close());
+
+  const response = await app.inject({
+    method: "DELETE",
+    url: "/sessions/4e4f8a8c-7c1f-4fa7-a5a5-83eb983437ea/data",
+  });
+
+  assert.equal(response.statusCode, 503);
+  assert.equal(response.json().error.code, "DOCUMENT_STORAGE_UNAVAILABLE");
+  assert.equal(response.body.includes("4e4f8a8c"), false);
+});
+
+test("does not report deletion success if a pending Pix cancellation cannot be confirmed", async (context) => {
+  const app = createApp({
+    analysisService: null,
+    sessionRepository: null,
+    dataDeletionService: {
+      async deleteSessionData() {
+        throw new DataDeletionServiceError("PAYMENT_CANCELLATION_UNAVAILABLE");
+      },
+    },
+  });
+  context.after(() => app.close());
+
+  const response = await app.inject({
+    method: "DELETE",
+    url: "/sessions/4e4f8a8c-7c1f-4fa7-a5a5-83eb983437ea/data",
+  });
+
+  assert.equal(response.statusCode, 503);
+  assert.deepEqual(response.json(), {
+    error: {
+      code: "PAYMENT_CANCELLATION_UNAVAILABLE",
+      message: "Não foi possível cancelar a cobrança Pix. Seus dados não foram excluídos; tente novamente.",
+    },
   });
 });
 

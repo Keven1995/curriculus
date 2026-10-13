@@ -29,6 +29,8 @@ import { PaymentWebhookError } from "./payments/payment-webhook-service.js";
 import { createConfiguredDocumentService } from "./documents/configured-document-service.js";
 import { validateDocumentRequest } from "./documents/document-request.js";
 import { DocumentServiceError, type DocumentService } from "./documents/document-service.js";
+import { createConfiguredDataDeletionService } from "./privacy/configured-data-deletion-service.js";
+import { DataDeletionServiceError, type DataDeletionService } from "./privacy/data-deletion-service.js";
 
 type AppOptions = {
   webOrigin?: string;
@@ -38,6 +40,7 @@ type AppOptions = {
   pixPaymentService?: PixPaymentServiceContract | null;
   paymentWebhook?: PaymentWebhookEndpoint | null;
   documentService?: Pick<DocumentService, "generateDocument" | "downloadDocument" | "deleteExpiredDocuments"> | null;
+  dataDeletionService?: Pick<DataDeletionService, "deleteSessionData"> | null;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -79,6 +82,12 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
         ? createConfiguredDocumentService(sessionRepository)
         : undefined
       : options.documentService ?? undefined;
+  const dataDeletionService =
+    options.dataDeletionService === undefined
+      ? sessionRepository
+        ? createConfiguredDataDeletionService(sessionRepository)
+        : undefined
+      : options.dataDeletionService ?? undefined;
   const app = Fastify({
     logger: options.logger ?? false,
     bodyLimit: ANALYSIS_REQUEST_LIMITS.bodyBytes,
@@ -176,6 +185,46 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
   );
 
   app.get("/health", async () => ({ status: "ok", service: "curriculus-api" }));
+
+  app.delete<{ Params: { sessionId: string } }>("/sessions/:sessionId/data", async (request, reply) => {
+    reply.header("cache-control", "no-store");
+    if (!dataDeletionService) {
+      return reply.status(503).send({
+        error: {
+          code: "DATA_DELETION_NOT_CONFIGURED",
+          message: "A exclusão segura não está disponível neste ambiente.",
+        },
+      });
+    }
+
+    try {
+      await dataDeletionService.deleteSessionData(request.params.sessionId);
+      return reply.status(204).send();
+    } catch (error) {
+      if (error instanceof DataDeletionServiceError) {
+        const mapping: Record<
+          DataDeletionServiceError["code"],
+          { statusCode: number; message: string }
+        > = {
+          INVALID_SESSION: { statusCode: 400, message: "O identificador desta sessão é inválido." },
+          PERSISTENCE_UNAVAILABLE: { statusCode: 503, message: "O armazenamento está indisponível; tente novamente." },
+          DOCUMENT_STORAGE_UNAVAILABLE: { statusCode: 503, message: "O arquivo não pôde ser removido; tente novamente." },
+          PAYMENT_CANCELLATION_UNAVAILABLE: { statusCode: 503, message: "Não foi possível cancelar a cobrança Pix. Seus dados não foram excluídos; tente novamente." },
+          SESSION_DELETION_CONFLICT: { statusCode: 409, message: "A sessão mudou durante a exclusão; tente novamente." },
+        };
+        const mapped = mapping[error.code];
+        request.log.warn({ event: "data_deletion_failed", reason: error.code }, "Session data deletion failed");
+        return reply.status(mapped.statusCode).send({
+          error: { code: error.code, message: mapped.message },
+        });
+      }
+
+      request.log.error({ event: "data_deletion_failed", reason: "unexpected_error" }, "Session data deletion failed");
+      return reply.status(500).send({
+        error: { code: "DATA_DELETION_FAILED", message: "Não foi possível concluir a exclusão." },
+      });
+    }
+  });
 
   app.post("/analyses", async (request, reply) => {
     const validation = validateAnalysisRequest(request.body);

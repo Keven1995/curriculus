@@ -813,6 +813,136 @@
   font-size: 12px;
 }
 
+.footer nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.footer nav a,
+.privacyNotice a {
+  color: #246c55;
+  font-weight: 700;
+  text-underline-offset: 3px;
+}
+
+.dataDeletion {
+  max-width: 900px;
+  margin: -42px auto 72px;
+  padding: 18px;
+  border: 1px solid #dce9e2;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.dataDeletionTrigger {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: #725050;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.dataDeletionConfirmation h3 {
+  margin: 0 0 8px;
+  color: #294139;
+  font-size: 15px;
+}
+
+.dataDeletionConfirmation p {
+  color: #586b65;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.dataDeletionActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.dataDeletionActions button {
+  min-height: 42px;
+  padding: 9px 14px;
+  border: 1px solid #d4ded8;
+  border-radius: 8px;
+  background: #fff;
+  color: #294139;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.dataDeletionActions button:first-child {
+  border-color: #a33232;
+  background: #a33232;
+  color: #fff;
+}
+
+.dataDeletionActions button:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+.dataDeletionError,
+.deletionNotice {
+  color: #8f2929 !important;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.deletionNotice {
+  max-width: 790px;
+  margin: 24px auto 0;
+  padding: 14px;
+  border: 1px solid #c9e4d5;
+  border-radius: 10px;
+  background: #eef7f1;
+  color: #286247 !important;
+  line-height: 1.6;
+  text-align: center;
+}
+
+.legalPage {
+  max-width: 820px;
+  margin: 0 auto;
+  padding: 46px 0 76px;
+  color: #344b42;
+  line-height: 1.75;
+}
+
+.legalPage h1,
+.legalPage h2 {
+  color: #1d3932;
+  font-family: Manrope, sans-serif;
+  line-height: 1.25;
+}
+
+.legalPage h1 { font-size: clamp(30px, 5vw, 42px); }
+.legalPage h2 { margin-top: 30px; font-size: 21px; }
+.legalPage li { margin: 8px 0; }
+
+.legalDraftNotice {
+  padding: 16px 18px;
+  border: 1px solid #ead49a;
+  border-radius: 10px;
+  background: #fff8df;
+  color: #654e13;
+  font-weight: 700;
+}
+
+.legalBackLink {
+  color: #246c55;
+  font-weight: 700;
+  text-underline-offset: 3px;
+}
+
 .footer a {
   color: #36765f;
   text-underline-offset: 3px;

@@ -120,3 +120,77 @@ test("retrieves payment status from Mercado Pago through an authenticated server
     dateApproved: new Date("2026-01-01T01:00:00.000Z"),
   });
 });
+
+test("cancels a pending payment and confirms the terminal status with an authoritative read", async () => {
+  const requests: Array<{ url: string; method: string; authorization: string; body: unknown }> = [];
+  const payment = (status: string) => ({
+    id: "987654321",
+    status,
+    transaction_amount: 1.99,
+    currency_id: "BRL",
+    external_reference: chargeInput.orderId,
+    payment_method_id: "pix",
+    date_approved: status === "approved" ? "2026-01-01T01:00:00.000Z" : null,
+  });
+  let readCount = 0;
+  const provider = new MercadoPagoPixPaymentProvider("server-secret", async (url, init) => {
+    const method = String(init?.method);
+    requests.push({
+      url: String(url),
+      method,
+      authorization: new Headers(init?.headers).get("authorization") ?? "",
+      body: init?.body ? JSON.parse(String(init.body)) : undefined,
+    });
+    if (method === "PUT") return new Response(JSON.stringify(payment("cancelled")), { status: 200 });
+    readCount += 1;
+    return new Response(JSON.stringify(payment(readCount === 1 ? "pending" : "cancelled")), { status: 200 });
+  });
+
+  const status = await provider.cancelPendingPayment("987654321", chargeInput.orderId);
+
+  assert.equal(status, "cancelled");
+  assert.deepEqual(requests.map(({ method }) => method), ["GET", "PUT", "GET"]);
+  assert.ok(requests.every(({ authorization }) => authorization === "Bearer server-secret"));
+  assert.equal(requests[1]?.url, "https://api.mercadopago.com/v1/payments/987654321");
+  assert.deepEqual(requests[1]?.body, { status: "cancelled" });
+});
+
+test("does not cancel or trust a payment that does not match the Curriculus order", async () => {
+  const methods: string[] = [];
+  const provider = new MercadoPagoPixPaymentProvider("server-secret", async (_url, init) => {
+    methods.push(String(init?.method));
+    return new Response(JSON.stringify({
+      id: "987654321",
+      status: "pending",
+      transaction_amount: 9.99,
+      currency_id: "BRL",
+      external_reference: chargeInput.orderId,
+      payment_method_id: "pix",
+    }), { status: 200 });
+  });
+
+  await assert.rejects(
+    provider.cancelPendingPayment("987654321", chargeInput.orderId),
+    PixPaymentProviderError,
+  );
+  assert.deepEqual(methods, ["GET"]);
+});
+
+test("treats an already approved payment as approved without attempting cancellation", async () => {
+  const methods: string[] = [];
+  const provider = new MercadoPagoPixPaymentProvider("server-secret", async (_url, init) => {
+    methods.push(String(init?.method));
+    return new Response(JSON.stringify({
+      id: "987654321",
+      status: "approved",
+      transaction_amount: 1.99,
+      currency_id: "BRL",
+      external_reference: chargeInput.orderId,
+      payment_method_id: "pix",
+      date_approved: "2026-01-01T01:00:00.000Z",
+    }), { status: 200 });
+  });
+
+  assert.equal(await provider.cancelPendingPayment("987654321", chargeInput.orderId), "approved");
+  assert.deepEqual(methods, ["GET"]);
+});

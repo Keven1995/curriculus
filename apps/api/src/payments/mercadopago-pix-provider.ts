@@ -5,6 +5,10 @@ import type {
   PixPaymentProvider,
 } from "./pix-payment-provider.js";
 import type { PaymentStatusProvider, ProviderPaymentDetails } from "./payment-status-provider.js";
+import type {
+  PendingPaymentCancellationProvider,
+  PendingPaymentCancellationStatus,
+} from "./pending-payment-cancellation-provider.js";
 
 const MAX_QR_CODE_LENGTH = 2_048;
 const MAX_QR_IMAGE_LENGTH = 256_000;
@@ -91,7 +95,11 @@ function parsePaymentDetails(value: unknown, requestedPaymentId: string): Provid
   };
 }
 
-export class MercadoPagoPixPaymentProvider implements PixPaymentProvider, PaymentStatusProvider {
+export class MercadoPagoPixPaymentProvider implements
+  PixPaymentProvider,
+  PaymentStatusProvider,
+  PendingPaymentCancellationProvider
+{
   constructor(
     private readonly accessToken: string,
     private readonly fetcher: typeof fetch = fetch,
@@ -156,5 +164,77 @@ export class MercadoPagoPixPaymentProvider implements PixPaymentProvider, Paymen
       throw new PixPaymentProviderError();
     }
     return parsePaymentDetails(responseBody, paymentId);
+  }
+
+  async cancelPendingPayment(
+    paymentId: string,
+    expectedOrderId: string,
+  ): Promise<PendingPaymentCancellationStatus> {
+    const before = await this.getPaymentDetails(paymentId);
+    this.assertCancellationPaymentMatch(before, paymentId, expectedOrderId);
+    const beforeStatus = this.cancellationStatus(before.status);
+    if (beforeStatus !== "pending") return beforeStatus;
+
+    try {
+      await this.fetcher(
+        `https://api.mercadopago.com/v1/payments/${encodeURIComponent(paymentId)}`,
+        {
+          method: "PUT",
+          headers: {
+            authorization: `Bearer ${this.accessToken}`,
+            "content-type": "application/json",
+          },
+          signal: AbortSignal.timeout(15_000),
+          body: JSON.stringify({ status: "cancelled" }),
+        },
+      );
+    } catch {
+      // A follow-up authoritative read handles timeouts after a successful cancellation.
+    }
+
+    const after = await this.getPaymentDetails(paymentId);
+    this.assertCancellationPaymentMatch(after, paymentId, expectedOrderId);
+    const afterStatus = this.cancellationStatus(after.status);
+    if (afterStatus === "pending") throw new PixPaymentProviderError();
+    return afterStatus;
+  }
+
+  private assertCancellationPaymentMatch(
+    payment: ProviderPaymentDetails,
+    expectedPaymentId: string,
+    expectedOrderId: string,
+  ): void {
+    if (
+      payment.paymentId !== expectedPaymentId ||
+      payment.externalReference !== expectedOrderId ||
+      payment.transactionAmount !== 1.99 ||
+      payment.currency !== "BRL" ||
+      payment.paymentMethodId !== "pix"
+    ) {
+      throw new PixPaymentProviderError();
+    }
+  }
+
+  private cancellationStatus(status: string): "pending" | PendingPaymentCancellationStatus {
+    switch (status) {
+      case "pending":
+      case "in_process":
+      case "authorized":
+      case "in_mediation":
+        return "pending";
+      case "cancelled":
+        return "cancelled";
+      case "approved":
+        return "approved";
+      case "rejected":
+        return "rejected";
+      case "expired":
+        return "expired";
+      case "refunded":
+      case "charged_back":
+        return "refunded";
+      default:
+        throw new PixPaymentProviderError();
+    }
   }
 }

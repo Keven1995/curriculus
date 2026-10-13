@@ -12,6 +12,7 @@ import {
 import { validateIntake, type IntakeInput } from "../lib/intake";
 import { AnalysisPreview } from "./AnalysisPreview";
 import { PixCheckout } from "./PixCheckout";
+import { SessionDataControls } from "./SessionDataControls";
 
 type AnalysisFlowProps = {
   styles: Record<string, string>;
@@ -33,6 +34,7 @@ export function AnalysisFlow({ styles, apiBaseUrl, fetcher }: AnalysisFlowProps)
   const [analysisResponse, setAnalysisResponse] = useState<AnalysisApiResponse | null>(null);
   const [decisions, setDecisions] = useState<SuggestionDecisions>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [deletionNotice, setDeletionNotice] = useState(false);
   const previewTitleRef = useRef<HTMLHeadingElement>(null);
 
   useEffect(() => {
@@ -45,6 +47,7 @@ export function AnalysisFlow({ styles, apiBaseUrl, fetcher }: AnalysisFlowProps)
     setMessage("");
     setAnalysisResponse(null);
     setDecisions({});
+    setDeletionNotice(false);
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -83,8 +86,22 @@ export function AnalysisFlow({ styles, apiBaseUrl, fetcher }: AnalysisFlowProps)
     setDecisions((current) => updateSuggestionDecision(current, id, decision));
   }
 
+  function handleSessionDeleted() {
+    setForm(emptyForm);
+    setErrors({});
+    setMessage("");
+    setAnalysisResponse(null);
+    setDecisions({});
+    setDeletionNotice(true);
+  }
+
   return (
     <>
+      {deletionNotice && (
+        <p className={styles.deletionNotice} role="status" aria-live="polite">
+          Os dados desta sessão foram removidos. Os metadados financeiros, quando existentes, são mantidos separadamente conforme as obrigações aplicáveis.
+        </p>
+      )}
       <section className={styles.formSection} aria-labelledby="form-title">
         <div className={styles.sectionHeading}>
           <span className={styles.step} aria-hidden="true">01</span>
@@ -152,10 +169,10 @@ export function AnalysisFlow({ styles, apiBaseUrl, fetcher }: AnalysisFlowProps)
             <div>
               <h3 id="privacy-title">Seus dados devem servir apenas a este objetivo</h3>
               <p>
-                Currículo e descrição da vaga são enviados ao serviço para gerar sugestões, não para avaliar sua empregabilidade. Fornecedores necessários poderão processar os dados para prestar o serviço. Sessões sem pagamento expiram em 24 horas.
+                Currículo e descrição da vaga são usados para gerar sugestões, não para avaliar sua empregabilidade. Fornecedores necessários processam os dados para prestar o serviço. Sessões sem pagamento expiram em 24 horas; após gerar o PDF, currículo, vaga e análise são apagados e o arquivo expira em outras 24 horas. Você também pode pedir a exclusão antecipada abaixo.
               </p>
               <p className={styles.prototypeNote}>
-                A análise só será realizada quando o serviço estiver habilitado. Nenhum pagamento ou documento final é solicitado nesta etapa.
+                Consulte os <a href="/privacidade">rascunhos da Política de Privacidade</a> e dos <a href="/termos">Termos de Uso</a>. Eles ainda precisam de revisão jurídica e validação dos fornecedores antes de uso público.
               </p>
             </div>
           </aside>
@@ -215,6 +232,13 @@ export function AnalysisFlow({ styles, apiBaseUrl, fetcher }: AnalysisFlowProps)
             styles={styles}
             apiBaseUrl={apiBaseUrl}
             fetcher={fetcher}
+          />
+          <SessionDataControls
+            sessionId={analysisResponse.sessionId}
+            styles={styles}
+            apiBaseUrl={apiBaseUrl}
+            fetcher={fetcher}
+            onDeleted={handleSessionDeleted}
           />
         </>
       )}
