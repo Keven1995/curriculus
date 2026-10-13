@@ -175,7 +175,7 @@ test("creates a Pix charge only after the explicit checkout submission", async (
   assert.deepEqual(paymentBody, { payerEmail: "buyer@example.com" });
   assert.ok(screen.getByRole("img", { name: /qr code pix de r\$ 1,99/i }));
   assert.ok(screen.getByDisplayValue("pix-copy-code"));
-  assert.ok(screen.getByText(/não há confirmação automática nem liberação do documento/i));
+  assert.ok(screen.getByText(/webhook pode confirmar a cobrança, mas não haverá liberação do documento/i));
 });
 
 test("marks an invalid checkout email and does not request a Pix charge", async () => {

@@ -1,13 +1,26 @@
 import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
 import test from "node:test";
 import { createApp } from "./app.js";
 import { PixPaymentError } from "./payments/payment-errors.js";
+import { PaymentWebhookError } from "./payments/payment-webhook-service.js";
 
 const validRequest = {
   jobDescription: "Vaga de pessoa desenvolvedora",
   resume: "Experiência profissional em desenvolvimento",
   dataNoticeAcknowledged: true,
 };
+
+const webhookSecret = "webhook-test-secret";
+const webhookTimestamp = "1767225600";
+const webhookRequestId = "request-abc-123";
+const webhookPaymentId = "123456789";
+
+function webhookSignature(paymentId = webhookPaymentId) {
+  const manifest = `id:${paymentId.toLowerCase()};request-id:${webhookRequestId};ts:${webhookTimestamp};`;
+  const digest = createHmac("sha256", webhookSecret).update(manifest).digest("hex");
+  return `ts=${webhookTimestamp},v1=${digest}`;
+}
 
 test("keeps the health endpoint available", async (context) => {
   const app = createApp({ analysisService: null, sessionRepository: null });
@@ -118,6 +131,113 @@ test("maps provider failures to a safe response without exposing payment details
   assert.equal(response.statusCode, 502);
   assert.equal(response.json().error.code, "PROVIDER_UNAVAILABLE");
   assert.equal(response.body.includes("buyer@example.com"), false);
+});
+
+test("verifies Mercado Pago webhook authenticity before handling payment events", async (context) => {
+  let calls = 0;
+  let notifiedPaymentId = "";
+  const app = createApp({
+    analysisService: null,
+    sessionRepository: null,
+    paymentWebhook: {
+      secret: webhookSecret,
+      service: {
+        async handlePaymentNotification(paymentId: string) {
+          calls += 1;
+          notifiedPaymentId = paymentId;
+          return "processed" as const;
+        },
+      },
+    },
+  });
+  context.after(() => app.close());
+
+  const valid = await app.inject({
+    method: "POST",
+    url: `/webhooks/mercadopago?data.id=${webhookPaymentId}&type=payment`,
+    headers: {
+      "x-signature": webhookSignature(),
+      "x-request-id": webhookRequestId,
+    },
+    payload: { type: "payment", data: { id: webhookPaymentId } },
+  });
+  const invalid = await app.inject({
+    method: "POST",
+    url: `/webhooks/mercadopago?data.id=${webhookPaymentId}&type=payment`,
+    headers: { "x-signature": "ts=1767225600,v1=00", "x-request-id": webhookRequestId },
+    payload: { type: "payment", data: { id: webhookPaymentId } },
+  });
+
+  assert.equal(valid.statusCode, 200);
+  assert.equal(valid.json().received, true);
+  assert.equal(invalid.statusCode, 401);
+  assert.equal(calls, 1);
+  assert.equal(notifiedPaymentId, webhookPaymentId);
+});
+
+test("ignores non-payment webhook events and fails closed when webhook verification is not configured", async (context) => {
+  let calls = 0;
+  const configuredApp = createApp({
+    analysisService: null,
+    sessionRepository: null,
+    paymentWebhook: {
+      secret: webhookSecret,
+      service: {
+        async handlePaymentNotification() {
+          calls += 1;
+          return "processed" as const;
+        },
+      },
+    },
+  });
+  const unconfiguredApp = createApp({ analysisService: null, sessionRepository: null });
+  context.after(async () => {
+    await configuredApp.close();
+    await unconfiguredApp.close();
+  });
+
+  const ignored = await configuredApp.inject({
+    method: "POST",
+    url: "/webhooks/mercadopago?type=merchant_order",
+    payload: { type: "merchant_order" },
+  });
+  const unconfigured = await unconfiguredApp.inject({
+    method: "POST",
+    url: `/webhooks/mercadopago?data.id=${webhookPaymentId}&type=payment`,
+    headers: { "x-signature": webhookSignature(), "x-request-id": webhookRequestId },
+    payload: { type: "payment", data: { id: webhookPaymentId } },
+  });
+
+  assert.equal(ignored.statusCode, 200);
+  assert.equal(unconfigured.statusCode, 503);
+  assert.equal(calls, 0);
+});
+
+test("returns a retryable response when authoritative payment lookup fails", async (context) => {
+  const app = createApp({
+    analysisService: null,
+    sessionRepository: null,
+    paymentWebhook: {
+      secret: webhookSecret,
+      service: {
+        async handlePaymentNotification() {
+          throw new PaymentWebhookError("PROVIDER_UNAVAILABLE");
+        },
+      },
+    },
+  });
+  context.after(() => app.close());
+
+  const response = await app.inject({
+    method: "POST",
+    url: `/webhooks/mercadopago?data.id=${webhookPaymentId}&type=payment`,
+    headers: { "x-signature": webhookSignature(), "x-request-id": webhookRequestId },
+    payload: { type: "payment", data: { id: webhookPaymentId } },
+  });
+
+  assert.equal(response.statusCode, 502);
+  assert.equal(response.json().error.code, "PROVIDER_UNAVAILABLE");
+  assert.equal(response.body.includes(webhookSecret), false);
 });
 
 test("returns safe field errors for invalid analysis input", async (context) => {

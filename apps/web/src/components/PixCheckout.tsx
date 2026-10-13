@@ -68,7 +68,7 @@ export function PixCheckout({ sessionId, styles, apiBaseUrl, fetcher }: PixCheck
           Total <strong>R$ 1,99</strong>
         </p>
         <p className={styles.checkoutDescription}>
-          A cobrança se refere à geração futura do currículo com as sugestões que você aprovar. Nesta etapa, o Pix fica pendente; a confirmação do pagamento e a geração/liberação do documento ainda não estão implementadas.
+          A cobrança se refere à geração futura do currículo com as sugestões que você aprovar. O pagamento pode ser confirmado automaticamente pelo webhook, mas a geração e a liberação do documento ainda não estão implementadas.
         </p>
         <p className={styles.checkoutPrivacy}>
           O e-mail é enviado ao Mercado Pago para criar a cobrança e não é gravado no Curriculus.
@@ -103,7 +103,7 @@ export function PixCheckout({ sessionId, styles, apiBaseUrl, fetcher }: PixCheck
               {isCreating ? "Gerando Pix…" : "Gerar código Pix de R$ 1,99"}
             </button>
             <p className={styles.checkoutWarning}>
-              Não pague em ambiente público: a confirmação e a entrega do documento ainda não estão disponíveis.
+              Não use cobranças em ambiente público: a integração permanece desativada por padrão e a entrega do documento ainda não está disponível.
             </p>
             {(message || isCreating) && (
               <p
@@ -139,7 +139,7 @@ export function PixCheckout({ sessionId, styles, apiBaseUrl, fetcher }: PixCheck
               value={payment.qrCode}
             />
             <p className={styles.checkoutWarning}>
-              Não faça o pagamento fora de um ambiente de teste. Ainda não há confirmação automática nem liberação do documento.
+              Pague somente em ambiente de teste. O webhook pode confirmar a cobrança, mas não haverá liberação do documento nesta versão.
             </p>
           </div>
         )}

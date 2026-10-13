@@ -9,7 +9,8 @@ export function createConfiguredPixPaymentService(
   if (environment.MERCADOPAGO_PIX_ENABLED !== "true") return undefined;
 
   const accessToken = environment.MERCADOPAGO_ACCESS_TOKEN?.trim();
-  if (!accessToken) return undefined;
+  const webhookSecret = environment.MERCADOPAGO_WEBHOOK_SECRET?.trim();
+  if (!accessToken || !webhookSecret) return undefined;
 
   return new PixPaymentService(repository, new MercadoPagoPixPaymentProvider(accessToken));
 }

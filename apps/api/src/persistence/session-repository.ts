@@ -68,6 +68,9 @@ export interface SessionRepository {
     orderId: string,
     charge: { providerPaymentId: string; qrCode: string; qrCodeBase64: string },
   ): Promise<boolean>;
+  findOrderByProviderPaymentId(providerPaymentId: string): Promise<OrderRecord | null>;
+  attachProviderPaymentId(orderId: string, providerPaymentId: string): Promise<boolean>;
+  updateOrderStatusByProviderPaymentId(providerPaymentId: string, status: OrderStatus): Promise<boolean>;
   findOrder(id: string): Promise<OrderRecord | null>;
   close?(): Promise<void>;
 }
@@ -297,6 +300,51 @@ export class PostgresSessionRepository implements SessionRepository {
           AND (pix_qr_code_base64 IS NULL OR pix_qr_code_base64 = $4)
         RETURNING id`,
       [orderId, charge.providerPaymentId, charge.qrCode, charge.qrCodeBase64],
+    );
+    return result.rowCount > 0;
+  }
+
+  async findOrderByProviderPaymentId(providerPaymentId: string): Promise<OrderRecord | null> {
+    const result = await this.database.query<SessionRow>(
+      `SELECT id, session_id, amount_cents, currency, status,
+              provider_payment_id, pix_qr_code, pix_qr_code_base64,
+              created_at, updated_at, checkout_expires_at
+         FROM orders WHERE provider_payment_id = $1`,
+      [providerPaymentId],
+    );
+    const row = result.rows[0];
+    return row ? mapOrder(row) : null;
+  }
+
+  async attachProviderPaymentId(orderId: string, providerPaymentId: string): Promise<boolean> {
+    const result = await this.database.query<SessionRow>(
+      `UPDATE orders
+          SET provider_payment_id = $2,
+              updated_at = CASE WHEN provider_payment_id IS DISTINCT FROM $2 THEN NOW() ELSE updated_at END
+        WHERE id = $1 AND status = 'pending'
+          AND (provider_payment_id IS NULL OR provider_payment_id = $2)
+        RETURNING id`,
+      [orderId, providerPaymentId],
+    );
+    return result.rowCount > 0;
+  }
+
+  async updateOrderStatusByProviderPaymentId(
+    providerPaymentId: string,
+    status: OrderStatus,
+  ): Promise<boolean> {
+    const result = await this.database.query<SessionRow>(
+      `UPDATE orders
+          SET status = $2,
+              updated_at = CASE WHEN status <> $2 THEN NOW() ELSE updated_at END
+        WHERE provider_payment_id = $1
+          AND (
+            status = $2
+            OR status = 'pending'
+            OR (status = 'approved' AND $2 = 'refunded')
+          )
+        RETURNING id`,
+      [providerPaymentId, status],
     );
     return result.rowCount > 0;
   }

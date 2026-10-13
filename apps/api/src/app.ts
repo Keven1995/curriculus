@@ -20,6 +20,12 @@ import { validatePixPaymentRequest } from "./payments/payment-request.js";
 import { PixPaymentError } from "./payments/payment-errors.js";
 import { createConfiguredPixPaymentService } from "./payments/configured-pix-payment-service.js";
 import type { PixPaymentServiceContract } from "./payments/pix-payment-service.js";
+import {
+  createConfiguredPaymentWebhook,
+  type PaymentWebhookEndpoint,
+} from "./payments/configured-payment-webhook.js";
+import { verifyMercadoPagoWebhookSignature } from "./payments/mercadopago-webhook-signature.js";
+import { PaymentWebhookError } from "./payments/payment-webhook-service.js";
 
 type AppOptions = {
   webOrigin?: string;
@@ -27,7 +33,12 @@ type AppOptions = {
   analysisService?: AnalysisService | null;
   sessionRepository?: SessionRepository | null;
   pixPaymentService?: PixPaymentServiceContract | null;
+  paymentWebhook?: PaymentWebhookEndpoint | null;
 };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 const issueMessages: Record<AnalysisRequestIssue["code"], string> = {
   invalid_type: "O formato de um ou mais campos é inválido.",
@@ -52,6 +63,12 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
         ? createConfiguredPixPaymentService(sessionRepository)
         : undefined
       : options.pixPaymentService ?? undefined;
+  const paymentWebhook =
+    options.paymentWebhook === undefined
+      ? sessionRepository
+        ? createConfiguredPaymentWebhook(sessionRepository)
+        : undefined
+      : options.paymentWebhook ?? undefined;
   const app = Fastify({
     logger: options.logger ?? false,
     bodyLimit: ANALYSIS_REQUEST_LIMITS.bodyBytes,
@@ -339,6 +356,94 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
         error: {
           code: "PAYMENT_FAILED",
           message: "Não foi possível processar a cobrança Pix.",
+        },
+      });
+    }
+  });
+
+  app.post("/webhooks/mercadopago", async (request, reply) => {
+    const query = request.query as Record<string, unknown>;
+    const body = isRecord(request.body) ? request.body : undefined;
+    const isPaymentEvent =
+      body?.type === "payment" || query.type === "payment" || query.topic === "payment";
+    if (!isPaymentEvent) return reply.status(200).send({ received: true });
+
+    if (!paymentWebhook) {
+      return reply.status(503).send({
+        error: {
+          code: "PAYMENT_WEBHOOK_NOT_CONFIGURED",
+          message: "A confirmação de pagamentos não está configurada neste ambiente.",
+        },
+      });
+    }
+
+    const paymentId = query["data.id"];
+    const signature = request.headers["x-signature"];
+    const requestId = request.headers["x-request-id"];
+    if (
+      typeof paymentId !== "string" ||
+      !/^[a-z\d_-]{1,64}$/i.test(paymentId) ||
+      typeof signature !== "string" ||
+      typeof requestId !== "string"
+    ) {
+      return reply.status(400).send({
+        error: {
+          code: "INVALID_WEBHOOK_REQUEST",
+          message: "A notificação de pagamento está incompleta.",
+        },
+      });
+    }
+
+    const bodyData = body && isRecord(body.data) ? body.data.id : undefined;
+    if (
+      (typeof bodyData === "string" || typeof bodyData === "number") &&
+      String(bodyData) !== paymentId
+    ) {
+      return reply.status(400).send({
+        error: {
+          code: "INVALID_WEBHOOK_REQUEST",
+          message: "A notificação de pagamento está inconsistente.",
+        },
+      });
+    }
+
+    if (!verifyMercadoPagoWebhookSignature(paymentWebhook.secret, signature, requestId, paymentId)) {
+      return reply.status(401).send({
+        error: {
+          code: "INVALID_WEBHOOK_SIGNATURE",
+          message: "A assinatura da notificação é inválida.",
+        },
+      });
+    }
+
+    try {
+      await paymentWebhook.service.handlePaymentNotification(paymentId);
+      return reply.status(200).send({ received: true });
+    } catch (error) {
+      if (error instanceof PaymentWebhookError) {
+        const persistenceUnavailable = error.code === "PERSISTENCE_UNAVAILABLE";
+        request.log.warn(
+          { event: "payment_webhook_failed", reason: error.code },
+          "Payment webhook processing failed",
+        );
+        return reply.status(persistenceUnavailable ? 503 : 502).send({
+          error: {
+            code: error.code,
+            message: persistenceUnavailable
+              ? "O armazenamento não está disponível para confirmar o pagamento."
+              : "Não foi possível consultar o pagamento no provedor.",
+          },
+        });
+      }
+
+      request.log.error(
+        { event: "payment_webhook_failed", reason: "unexpected_error" },
+        "Payment webhook processing failed",
+      );
+      return reply.status(500).send({
+        error: {
+          code: "PAYMENT_WEBHOOK_FAILED",
+          message: "Não foi possível processar a confirmação do pagamento.",
         },
       });
     }

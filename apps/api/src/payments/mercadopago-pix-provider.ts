@@ -4,6 +4,7 @@ import type {
   PixPaymentCharge,
   PixPaymentProvider,
 } from "./pix-payment-provider.js";
+import type { PaymentStatusProvider, ProviderPaymentDetails } from "./payment-status-provider.js";
 
 const MAX_QR_CODE_LENGTH = 2_048;
 const MAX_QR_IMAGE_LENGTH = 256_000;
@@ -46,7 +47,51 @@ function parsePaymentResponse(value: unknown, input: CreatePixPaymentInput): Pix
   return { providerPaymentId, qrCode, qrCodeBase64 };
 }
 
-export class MercadoPagoPixPaymentProvider implements PixPaymentProvider {
+function parsePaymentDetails(value: unknown, requestedPaymentId: string): ProviderPaymentDetails {
+  if (!isRecord(value)) throw new PixPaymentProviderError();
+
+  const rawId = value.id;
+  const paymentId = typeof rawId === "string" || typeof rawId === "number" ? String(rawId) : "";
+  const status = value.status;
+  const transactionAmount = value.transaction_amount;
+  const currency = value.currency_id;
+  const externalReference = value.external_reference;
+  const paymentMethodId = value.payment_method_id;
+  const rawDateApproved = value.date_approved;
+  let dateApproved: Date | null = null;
+
+  if (rawDateApproved !== undefined && rawDateApproved !== null) {
+    if (typeof rawDateApproved !== "string") throw new PixPaymentProviderError();
+    dateApproved = new Date(rawDateApproved);
+    if (Number.isNaN(dateApproved.getTime())) throw new PixPaymentProviderError();
+  }
+
+  if (
+    !paymentId ||
+    paymentId !== requestedPaymentId ||
+    typeof status !== "string" ||
+    !status ||
+    typeof transactionAmount !== "number" ||
+    !Number.isFinite(transactionAmount) ||
+    typeof currency !== "string" ||
+    (externalReference !== null && typeof externalReference !== "string") ||
+    (paymentMethodId !== null && typeof paymentMethodId !== "string")
+  ) {
+    throw new PixPaymentProviderError();
+  }
+
+  return {
+    paymentId,
+    status,
+    transactionAmount,
+    currency,
+    externalReference: typeof externalReference === "string" ? externalReference : null,
+    paymentMethodId: typeof paymentMethodId === "string" ? paymentMethodId : null,
+    dateApproved,
+  };
+}
+
+export class MercadoPagoPixPaymentProvider implements PixPaymentProvider, PaymentStatusProvider {
   constructor(
     private readonly accessToken: string,
     private readonly fetcher: typeof fetch = fetch,
@@ -86,5 +131,30 @@ export class MercadoPagoPixPaymentProvider implements PixPaymentProvider {
     }
 
     return parsePaymentResponse(responseBody, input);
+  }
+
+  async getPaymentDetails(paymentId: string): Promise<ProviderPaymentDetails> {
+    let response: Response;
+    try {
+      response = await this.fetcher(
+        `https://api.mercadopago.com/v1/payments/${encodeURIComponent(paymentId)}`,
+        {
+          method: "GET",
+          headers: { authorization: `Bearer ${this.accessToken}` },
+          signal: AbortSignal.timeout(15_000),
+        },
+      );
+    } catch {
+      throw new PixPaymentProviderError();
+    }
+    if (!response.ok) throw new PixPaymentProviderError();
+
+    let responseBody: unknown;
+    try {
+      responseBody = await response.json();
+    } catch {
+      throw new PixPaymentProviderError();
+    }
+    return parsePaymentDetails(responseBody, paymentId);
   }
 }

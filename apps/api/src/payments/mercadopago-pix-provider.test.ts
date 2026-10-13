@@ -88,3 +88,35 @@ test("does not expose Mercado Pago response bodies in provider errors", async ()
     },
   );
 });
+
+test("retrieves payment status from Mercado Pago through an authenticated server request", async () => {
+  let requestedUrl = "";
+  let authorization = "";
+  const provider = new MercadoPagoPixPaymentProvider("server-secret", async (url, init) => {
+    requestedUrl = String(url);
+    authorization = new Headers(init?.headers).get("authorization") ?? "";
+    return new Response(JSON.stringify({
+      id: 987654321,
+      status: "approved",
+      transaction_amount: 1.99,
+      currency_id: "BRL",
+      external_reference: chargeInput.orderId,
+      payment_method_id: "pix",
+      date_approved: "2026-01-01T01:00:00.000Z",
+    }), { status: 200 });
+  });
+
+  const payment = await provider.getPaymentDetails("987654321");
+
+  assert.equal(requestedUrl, "https://api.mercadopago.com/v1/payments/987654321");
+  assert.equal(authorization, "Bearer server-secret");
+  assert.deepEqual(payment, {
+    paymentId: "987654321",
+    status: "approved",
+    transactionAmount: 1.99,
+    currency: "BRL",
+    externalReference: chargeInput.orderId,
+    paymentMethodId: "pix",
+    dateApproved: new Date("2026-01-01T01:00:00.000Z"),
+  });
+});

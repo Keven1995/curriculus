@@ -8,7 +8,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.scripts.json",
-    "test": "tsx --test src/analyses/analysis-request.test.ts src/analyses/analysis-output.test.ts src/analyses/analysis-service.test.ts src/analyses/configured-analysis-service.test.ts src/analyses/openai-responses-provider.test.ts src/persistence/session-repository.test.ts src/payments/payment-request.test.ts src/payments/mercadopago-pix-provider.test.ts src/payments/pix-payment-service.test.ts src/payments/configured-pix-payment-service.test.ts src/server.test.ts",
+    "test": "tsx --test src/analyses/analysis-request.test.ts src/analyses/analysis-output.test.ts src/analyses/analysis-service.test.ts src/analyses/configured-analysis-service.test.ts src/analyses/openai-responses-provider.test.ts src/persistence/session-repository.test.ts src/payments/payment-request.test.ts src/payments/mercadopago-pix-provider.test.ts src/payments/pix-payment-service.test.ts src/payments/configured-pix-payment-service.test.ts src/payments/mercadopago-webhook-signature.test.ts src/payments/payment-webhook-service.test.ts src/payments/configured-payment-webhook.test.ts src/server.test.ts",
     "db:migrate": "tsx scripts/migrate.ts"
   },
   "dependencies": {

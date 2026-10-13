@@ -237,6 +237,63 @@ test("stores provider payment instructions without persisting payer email", asyn
   assert.equal(database.calls[0]!.sql.toLowerCase().includes("payer_email"), false);
 });
 
+test("looks up payment orders by Mercado Pago id without reading session content", async () => {
+  const database = new FakeDatabase();
+  database.result = {
+    rows: [{
+      id: "order-1",
+      session_id: "session-1",
+      amount_cents: 199,
+      currency: "BRL",
+      status: "pending",
+      provider_payment_id: "123456789",
+      pix_qr_code: "pix-code",
+      pix_qr_code_base64: "base64-code",
+      created_at: new Date("2026-01-01T00:00:00.000Z"),
+      updated_at: new Date("2026-01-01T00:00:00.000Z"),
+      checkout_expires_at: new Date("2026-01-02T00:00:00.000Z"),
+    }],
+    rowCount: 1,
+  };
+  const repository = new PostgresSessionRepository(database);
+
+  const order = await repository.findOrderByProviderPaymentId("123456789");
+
+  assert.equal(order?.id, "order-1");
+  assert.equal(order?.providerPaymentId, "123456789");
+  assert.match(database.calls[0]!.sql, /provider_payment_id = \$1/);
+  assert.equal(database.calls[0]!.sql.toLowerCase().includes("resume"), false);
+  assert.deepEqual(database.calls[0]!.values, ["123456789"]);
+});
+
+test("attaches a provider payment id to the matching pending order after recovery", async () => {
+  const database = new FakeDatabase();
+  database.result = { rows: [{ id: "order-1" }], rowCount: 1 };
+  const repository = new PostgresSessionRepository(database);
+
+  const attached = await repository.attachProviderPaymentId("order-1", "123456789");
+
+  assert.equal(attached, true);
+  assert.match(database.calls[0]!.sql, /UPDATE orders/);
+  assert.match(database.calls[0]!.sql, /status = 'pending'/);
+  assert.match(database.calls[0]!.sql, /provider_payment_id IS NULL OR provider_payment_id = \$2/);
+  assert.deepEqual(database.calls[0]!.values, ["order-1", "123456789"]);
+});
+
+test("updates payment state idempotently without permitting terminal-state regressions", async () => {
+  const database = new FakeDatabase();
+  database.result = { rows: [{ id: "order-1" }], rowCount: 1 };
+  const repository = new PostgresSessionRepository(database);
+
+  const updated = await repository.updateOrderStatusByProviderPaymentId("123456789", "approved");
+
+  assert.equal(updated, true);
+  assert.match(database.calls[0]!.sql, /UPDATE orders/);
+  assert.match(database.calls[0]!.sql, /status = \$2\s+OR status = 'pending'/);
+  assert.match(database.calls[0]!.sql, /status = 'approved' AND \$2 = 'refunded'/);
+  assert.deepEqual(database.calls[0]!.values, ["123456789", "approved"]);
+});
+
 test("creates the required Neon schema and foreign-key retention behavior", async () => {
   const { readFile } = await import("node:fs/promises");
   const migration = await readFile(
@@ -255,5 +312,6 @@ test("creates the required Neon schema and foreign-key retention behavior", asyn
   assert.match(migration, /CHECK \(amount_cents = 199\)/);
   assert.match(paymentMigration, /pix_qr_code/);
   assert.match(paymentMigration, /pix_qr_code_base64/);
+  assert.match(paymentMigration, /provider_payment_id IS NOT NULL[\s\S]*pix_qr_code IS NULL/);
   assert.equal(paymentMigration.toLowerCase().includes("payer_email"), false);
 });
