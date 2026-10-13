@@ -121,11 +121,87 @@ test("submits once, displays the accessible preview, and keeps decisions local",
   assert.equal(calls, 1);
   assert.equal(submitted?.resume, "Currículo de teste");
   assert.ok(screen.getByText("Desenvolvi APIs REST."));
-  assert.ok(screen.getByText(/nenhum pagamento foi solicitado/i));
+  assert.ok(screen.getByText(/o preview, por si só, não inicia uma cobrança/i));
 
   fireEvent.click(screen.getByRole("button", { name: "Aprovar sugestão: Experiência" }));
   assert.ok(screen.getByText("Aprovada localmente"));
   assert.equal(calls, 1);
+});
+
+test("creates a Pix charge only after the explicit checkout submission", async () => {
+  let analysisCalls = 0;
+  let paymentCalls = 0;
+  let paymentBody: Record<string, unknown> | undefined;
+  render(
+    <AnalysisFlow
+      styles={styles}
+      apiBaseUrl="https://api.example.test"
+      fetcher={async (url, init) => {
+        if (String(url).endsWith("/analyses")) {
+          analysisCalls += 1;
+          return new Response(JSON.stringify(apiResponse), { status: 201 });
+        }
+        paymentCalls += 1;
+        assert.equal(String(url), "https://api.example.test/sessions/session-test-id/payments/pix");
+        paymentBody = JSON.parse(String(init?.body));
+        return new Response(JSON.stringify({
+          orderId: "order-test-id",
+          amountCents: 199,
+          currency: "BRL",
+          status: "pending",
+          expiresAt: "2026-01-02T00:00:00.000Z",
+          qrCode: "pix-copy-code",
+          qrCodeBase64: "aGVsbG8=",
+        }), { status: 201 });
+      }}
+    />,
+  );
+
+  fillValidForm();
+  fireEvent.click(screen.getByRole("button", { name: /gerar sugestões/i }));
+  await screen.findByRole("heading", { name: "Revise as sugestões" });
+
+  assert.equal(paymentCalls, 0);
+  assert.ok(screen.getByText("R$ 1,99", { exact: true }));
+  fireEvent.change(screen.getByLabelText("E-mail para o pagamento Pix"), {
+    target: { value: "buyer@example.com" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: /gerar código pix de r\$ 1,99/i }));
+
+  await screen.findByRole("heading", { name: "Pix gerado" });
+  assert.equal(document.activeElement, screen.getByRole("heading", { name: "Pix gerado" }));
+  assert.equal(analysisCalls, 1);
+  assert.equal(paymentCalls, 1);
+  assert.deepEqual(paymentBody, { payerEmail: "buyer@example.com" });
+  assert.ok(screen.getByRole("img", { name: /qr code pix de r\$ 1,99/i }));
+  assert.ok(screen.getByDisplayValue("pix-copy-code"));
+  assert.ok(screen.getByText(/não há confirmação automática nem liberação do documento/i));
+});
+
+test("marks an invalid checkout email and does not request a Pix charge", async () => {
+  let paymentCalls = 0;
+  render(
+    <AnalysisFlow
+      styles={styles}
+      fetcher={async (url) => {
+        if (String(url).endsWith("/analyses")) {
+          return new Response(JSON.stringify(apiResponse), { status: 201 });
+        }
+        paymentCalls += 1;
+        return new Response();
+      }}
+    />,
+  );
+
+  fillValidForm();
+  fireEvent.click(screen.getByRole("button", { name: /gerar sugestões/i }));
+  await screen.findByRole("heading", { name: "Revise as sugestões" });
+  fireEvent.click(screen.getByRole("button", { name: /gerar código pix de r\$ 1,99/i }));
+
+  assert.equal(paymentCalls, 0);
+  await screen.findByRole("alert");
+  assert.equal(screen.getByLabelText("E-mail para o pagamento Pix").getAttribute("aria-invalid"), "true");
+  assert.ok(screen.getByRole("alert").textContent?.includes("Informe um e-mail válido"));
 });
 
 test("shows safe errors from the API without presenting a false preview", async () => {

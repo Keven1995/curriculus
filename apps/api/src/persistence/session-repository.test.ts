@@ -188,9 +188,64 @@ test("creates pending orders with the product's fixed price and without resume d
   assert.equal(database.calls[0]!.sql.includes("resume"), false);
 });
 
+test("reuses one pending order for a session and returns the stored Pix instructions", async () => {
+  const database = new FakeDatabase();
+  database.result = {
+    rows: [
+      {
+        id: "order-1",
+        session_id: "session-1",
+        amount_cents: 199,
+        currency: "BRL",
+        status: "pending",
+        provider_payment_id: "mp-payment-1",
+        pix_qr_code: "pix-code",
+        pix_qr_code_base64: "base64-code",
+        created_at: new Date("2026-01-01T00:00:00.000Z"),
+        updated_at: new Date("2026-01-01T00:00:00.000Z"),
+        checkout_expires_at: new Date("2026-01-02T00:00:00.000Z"),
+      },
+    ],
+    rowCount: 1,
+  };
+  const repository = new PostgresSessionRepository(database);
+
+  const order = await repository.createPendingOrder("session-1");
+
+  assert.equal(order?.id, "order-1");
+  assert.equal(order?.providerPaymentId, "mp-payment-1");
+  assert.equal(order?.pixQrCode, "pix-code");
+  assert.equal(order?.pixQrCodeBase64, "base64-code");
+  assert.match(database.calls[0]!.sql, /ON CONFLICT \(session_id\)/);
+});
+
+test("stores provider payment instructions without persisting payer email", async () => {
+  const database = new FakeDatabase();
+  database.result = { rows: [{ id: "order-1" }], rowCount: 1 };
+  const repository = new PostgresSessionRepository(database);
+
+  const saved = await repository.savePixPayment("order-1", {
+    providerPaymentId: "mp-payment-1",
+    qrCode: "pix-code",
+    qrCodeBase64: "base64-code",
+  });
+
+  assert.equal(saved, true);
+  assert.match(database.calls[0]!.sql, /UPDATE orders/);
+  assert.match(database.calls[0]!.sql, /status = 'pending'/);
+  assert.deepEqual(database.calls[0]!.values, ["order-1", "mp-payment-1", "pix-code", "base64-code"]);
+  assert.equal(database.calls[0]!.sql.toLowerCase().includes("payer_email"), false);
+});
+
 test("creates the required Neon schema and foreign-key retention behavior", async () => {
-  const migration = await import("node:fs/promises").then(({ readFile }) =>
-    readFile(new URL("../../migrations/001_temporary_sessions.sql", import.meta.url), "utf8"),
+  const { readFile } = await import("node:fs/promises");
+  const migration = await readFile(
+    new URL("../../migrations/001_temporary_sessions.sql", import.meta.url),
+    "utf8",
+  );
+  const paymentMigration = await readFile(
+    new URL("../../migrations/002_pix_payment_instructions.sql", import.meta.url),
+    "utf8",
   );
 
   assert.match(migration, /CREATE TABLE IF NOT EXISTS analysis_sessions/);
@@ -198,4 +253,7 @@ test("creates the required Neon schema and foreign-key retention behavior", asyn
   assert.match(migration, /ON DELETE SET NULL/);
   assert.match(migration, /expires_at/);
   assert.match(migration, /CHECK \(amount_cents = 199\)/);
+  assert.match(paymentMigration, /pix_qr_code/);
+  assert.match(paymentMigration, /pix_qr_code_base64/);
+  assert.equal(paymentMigration.toLowerCase().includes("payer_email"), false);
 });

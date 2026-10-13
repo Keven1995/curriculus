@@ -16,12 +16,17 @@ import { createConfiguredAnalysisService } from "./analyses/configured-analysis-
 import type { AnalysisService } from "./analyses/analysis-service.js";
 import { createConfiguredSessionRepository } from "./persistence/postgres-session-repository.js";
 import type { SessionRepository } from "./persistence/session-repository.js";
+import { validatePixPaymentRequest } from "./payments/payment-request.js";
+import { PixPaymentError } from "./payments/payment-errors.js";
+import { createConfiguredPixPaymentService } from "./payments/configured-pix-payment-service.js";
+import type { PixPaymentServiceContract } from "./payments/pix-payment-service.js";
 
 type AppOptions = {
   webOrigin?: string;
   logger?: boolean;
   analysisService?: AnalysisService | null;
   sessionRepository?: SessionRepository | null;
+  pixPaymentService?: PixPaymentServiceContract | null;
 };
 
 const issueMessages: Record<AnalysisRequestIssue["code"], string> = {
@@ -41,6 +46,12 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
     options.sessionRepository === undefined
       ? createConfiguredSessionRepository()
       : options.sessionRepository ?? undefined;
+  const pixPaymentService =
+    options.pixPaymentService === undefined
+      ? sessionRepository
+        ? createConfiguredPixPaymentService(sessionRepository)
+        : undefined
+      : options.pixPaymentService ?? undefined;
   const app = Fastify({
     logger: options.logger ?? false,
     bodyLimit: ANALYSIS_REQUEST_LIMITS.bodyBytes,
@@ -257,6 +268,77 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
         error: {
           code: "ANALYSIS_FAILED",
           message: "Não foi possível processar a análise.",
+        },
+      });
+    }
+  });
+
+  app.post<{ Params: { sessionId: string } }>("/sessions/:sessionId/payments/pix", async (request, reply) => {
+    const validation = validatePixPaymentRequest(request.body);
+    if (!validation.success) {
+      return reply.status(400).send({
+        error: {
+          code: "INVALID_REQUEST",
+          message: "Informe um e-mail válido para gerar o Pix.",
+          fields: validation.issues.map((issue) => ({ field: issue.field, code: issue.code })),
+        },
+      });
+    }
+
+    if (!pixPaymentService) {
+      return reply.status(503).send({
+        error: {
+          code: "PAYMENT_NOT_CONFIGURED",
+          message: "O pagamento Pix ainda não está habilitado neste ambiente.",
+        },
+      });
+    }
+
+    try {
+      const payment = await pixPaymentService.createPixPayment(
+        request.params.sessionId,
+        validation.data.payerEmail,
+      );
+      return reply.status(201).send(payment);
+    } catch (error) {
+      if (error instanceof PixPaymentError) {
+        const failure: Record<
+          PixPaymentError["code"],
+          { statusCode: number; message: string }
+        > = {
+          PERSISTENCE_UNAVAILABLE: {
+            statusCode: 503,
+            message: "O armazenamento temporário não está disponível neste momento.",
+          },
+          SESSION_NOT_PAYABLE: {
+            statusCode: 404,
+            message: "A sessão não foi encontrada ou expirou.",
+          },
+          ORDER_NOT_PENDING: {
+            statusCode: 409,
+            message: "Este pedido não aceita uma nova cobrança.",
+          },
+          CHECKOUT_WINDOW_TOO_SHORT: {
+            statusCode: 409,
+            message: "A sessão está próxima do vencimento. Gere uma nova análise para continuar.",
+          },
+          PROVIDER_UNAVAILABLE: {
+            statusCode: 502,
+            message: "Não foi possível gerar o Pix. Tente novamente mais tarde.",
+          },
+        };
+        const mapped = failure[error.code];
+        request.log.warn({ event: "pix_payment_failed", reason: error.code }, "Pix payment request failed");
+        return reply.status(mapped.statusCode).send({
+          error: { code: error.code, message: mapped.message },
+        });
+      }
+
+      request.log.error({ event: "pix_payment_failed", reason: "unexpected_error" }, "Pix payment request failed");
+      return reply.status(500).send({
+        error: {
+          code: "PAYMENT_FAILED",
+          message: "Não foi possível processar a cobrança Pix.",
         },
       });
     }

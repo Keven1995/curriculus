@@ -48,6 +48,8 @@ export type OrderRecord = {
   currency: "BRL";
   status: OrderStatus;
   providerPaymentId: string | null;
+  pixQrCode: string | null;
+  pixQrCodeBase64: string | null;
   createdAt: Date;
   updatedAt: Date;
   checkoutExpiresAt: Date;
@@ -62,6 +64,10 @@ export interface SessionRepository {
   deleteExpiredDocumentRecord(id: string): Promise<boolean>;
   markDocumentGenerated(id: string, storageKey: string): Promise<boolean>;
   createPendingOrder(sessionId: string): Promise<OrderRecord | null>;
+  savePixPayment(
+    orderId: string,
+    charge: { providerPaymentId: string; qrCode: string; qrCodeBase64: string },
+  ): Promise<boolean>;
   findOrder(id: string): Promise<OrderRecord | null>;
   close?(): Promise<void>;
 }
@@ -111,6 +117,8 @@ function mapOrder(row: SessionRow): OrderRecord {
     status: asOrderStatus(row.status),
     providerPaymentId:
       typeof row.provider_payment_id === "string" ? row.provider_payment_id : null,
+    pixQrCode: typeof row.pix_qr_code === "string" ? row.pix_qr_code : null,
+    pixQrCodeBase64: typeof row.pix_qr_code_base64 === "string" ? row.pix_qr_code_base64 : null,
     createdAt: asDate(row.created_at),
     updatedAt: asDate(row.updated_at),
     checkoutExpiresAt: asDate(row.checkout_expires_at),
@@ -124,6 +132,9 @@ export class PostgresSessionRepository implements SessionRepository {
     try {
       await this.database.query<SessionRow>(
         "SELECT id FROM analysis_sessions LIMIT 0",
+      );
+      await this.database.query<SessionRow>(
+        "SELECT id, pix_qr_code, pix_qr_code_base64 FROM orders LIMIT 0",
       );
       return true;
     } catch {
@@ -260,18 +271,41 @@ export class PostgresSessionRepository implements SessionRepository {
        SELECT id, 199, 'BRL', 'pending', expires_at
          FROM analysis_sessions
         WHERE id = $1 AND status = 'analysis_ready' AND expires_at > NOW()
-       RETURNING id, session_id, amount_cents, currency, status,
-                 provider_payment_id, created_at, updated_at, checkout_expires_at`,
+       ON CONFLICT (session_id) DO UPDATE SET session_id = EXCLUDED.session_id
+        RETURNING id, session_id, amount_cents, currency, status,
+                  provider_payment_id, pix_qr_code, pix_qr_code_base64,
+                  created_at, updated_at, checkout_expires_at`,
       [sessionId],
     );
     const row = result.rows[0];
     return row ? mapOrder(row) : null;
   }
 
+  async savePixPayment(
+    orderId: string,
+    charge: { providerPaymentId: string; qrCode: string; qrCodeBase64: string },
+  ): Promise<boolean> {
+    const result = await this.database.query<SessionRow>(
+      `UPDATE orders
+          SET provider_payment_id = $2,
+              pix_qr_code = $3,
+              pix_qr_code_base64 = $4,
+              updated_at = NOW()
+        WHERE id = $1 AND status = 'pending' AND checkout_expires_at > NOW()
+          AND (provider_payment_id IS NULL OR provider_payment_id = $2)
+          AND (pix_qr_code IS NULL OR pix_qr_code = $3)
+          AND (pix_qr_code_base64 IS NULL OR pix_qr_code_base64 = $4)
+        RETURNING id`,
+      [orderId, charge.providerPaymentId, charge.qrCode, charge.qrCodeBase64],
+    );
+    return result.rowCount > 0;
+  }
+
   async findOrder(id: string): Promise<OrderRecord | null> {
     const result = await this.database.query<SessionRow>(
       `SELECT id, session_id, amount_cents, currency, status,
-              provider_payment_id, created_at, updated_at, checkout_expires_at
+              provider_payment_id, pix_qr_code, pix_qr_code_base64,
+              created_at, updated_at, checkout_expires_at
          FROM orders WHERE id = $1`,
       [id],
     );

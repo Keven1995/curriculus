@@ -11,6 +11,7 @@ import {
 } from "../lib/analysis-client";
 import { validateIntake, type IntakeInput } from "../lib/intake";
 import { AnalysisPreview } from "./AnalysisPreview";
+import { PixCheckout } from "./PixCheckout";
 
 type AnalysisFlowProps = {
   styles: Record<string, string>;
@@ -205,6 +206,12 @@ export function AnalysisFlow({ styles, apiBaseUrl, fetcher }: AnalysisFlowProps)
             onDecision={decideSuggestion}
             styles={styles}
             previewTitleRef={previewTitleRef}
+          />
+          <PixCheckout
+            sessionId={analysisResponse.sessionId}
+            styles={styles}
+            apiBaseUrl={apiBaseUrl}
+            fetcher={fetcher}
           />
         </>
       )}

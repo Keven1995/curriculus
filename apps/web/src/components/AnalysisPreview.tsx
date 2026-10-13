@@ -170,7 +170,7 @@ export function AnalysisPreview({
         Esta é uma prévia. A marca d’água e a desativação de copiar e do menu de contexto são apenas dissuasões e não impedem capturas de tela, OCR ou reprodução.
       </p>
       <p className={styles.paymentNotice}>
-        Suas decisões ficam apenas nesta página. Nenhum pagamento foi solicitado e nenhum documento final foi gerado.
+        Suas decisões ficam apenas nesta página. O preview, por si só, não inicia uma cobrança nem gera o documento final.
       </p>
     </section>
   );
