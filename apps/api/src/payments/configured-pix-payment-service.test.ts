@@ -8,6 +8,8 @@ const repository = {
   async createPendingOrder() { return null; },
   async savePixPayment() { return false; },
 } as PixPaymentRepository;
+const accessToken = "test-mercado-access-token-with-at-least-32-bytes";
+const webhookSecret = "test-mercado-webhook-secret-with-at-least-32-bytes";
 
 test("keeps Mercado Pago disabled unless explicitly enabled with token and webhook secret", () => {
   assert.equal(createConfiguredPixPaymentService(repository, {} as NodeJS.ProcessEnv), undefined);
@@ -15,19 +17,19 @@ test("keeps Mercado Pago disabled unless explicitly enabled with token and webho
     MERCADOPAGO_PIX_ENABLED: "true",
   } as NodeJS.ProcessEnv), undefined);
   assert.equal(createConfiguredPixPaymentService(repository, {
-    MERCADOPAGO_ACCESS_TOKEN: "test-server-token",
+    MERCADOPAGO_ACCESS_TOKEN: accessToken,
   } as NodeJS.ProcessEnv), undefined);
   assert.equal(createConfiguredPixPaymentService(repository, {
     MERCADOPAGO_PIX_ENABLED: "true",
-    MERCADOPAGO_ACCESS_TOKEN: "test-server-token",
+    MERCADOPAGO_ACCESS_TOKEN: accessToken,
   } as NodeJS.ProcessEnv), undefined);
 });
 
 test("creates the payment service only for an explicitly enabled provider configuration", () => {
   const service = createConfiguredPixPaymentService(repository, {
     MERCADOPAGO_PIX_ENABLED: "true",
-    MERCADOPAGO_ACCESS_TOKEN: "test-server-token",
-    MERCADOPAGO_WEBHOOK_SECRET: "test-webhook-secret",
+    MERCADOPAGO_ACCESS_TOKEN: accessToken,
+    MERCADOPAGO_WEBHOOK_SECRET: webhookSecret,
   } as NodeJS.ProcessEnv);
 
   assert.equal(typeof service?.createPixPayment, "function");

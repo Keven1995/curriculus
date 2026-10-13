@@ -2,9 +2,20 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { config as loadDotEnv } from "dotenv";
 
-export function loadEnvironmentFiles(): void {
-  const workingDirectory = process.cwd();
-  const monorepoRoot = existsSync(resolve(workingDirectory, "apps/api/package.json"))
+type EnvironmentFileOptions = { path: string; quiet: true };
+type EnvironmentFileLoader = (options: EnvironmentFileOptions) => unknown;
+type PathExists = (path: string) => boolean;
+
+export function loadEnvironmentFiles(
+  environment: NodeJS.ProcessEnv = process.env,
+  workingDirectory = process.cwd(),
+  loadFile: EnvironmentFileLoader = (options) => loadDotEnv(options),
+  pathExists: PathExists = existsSync,
+): void {
+  // Production secrets must come from the deployment secret manager, never a checked-out .env file.
+  if (environment.NODE_ENV === "production") return;
+
+  const monorepoRoot = pathExists(resolve(workingDirectory, "apps/api/package.json"))
     ? workingDirectory
     : resolve(workingDirectory, "../..");
   const files = new Set([
@@ -13,6 +24,6 @@ export function loadEnvironmentFiles(): void {
   ]);
 
   for (const path of files) {
-    if (existsSync(path)) loadDotEnv({ path, quiet: true });
+    if (pathExists(path)) loadFile({ path, quiet: true });
   }
 }

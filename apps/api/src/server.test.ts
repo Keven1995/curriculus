@@ -37,6 +37,116 @@ test("keeps the health endpoint available", async (context) => {
   });
 });
 
+test("enforces an IP-scoped request limit and returns a retry hint", async (context) => {
+  const app = createApp({
+    analysisService: null,
+    sessionRepository: null,
+    rateLimitPolicies: { global: { limit: 1, windowMs: 60_000 } },
+  });
+  context.after(() => app.close());
+
+  const first = await app.inject({ method: "GET", url: "/health" });
+  const limited = await app.inject({ method: "GET", url: "/health" });
+
+  assert.equal(first.statusCode, 200);
+  assert.equal(limited.statusCode, 429);
+  assert.equal(limited.headers["retry-after"], "60");
+  assert.equal(limited.json().error.code, "RATE_LIMITED");
+});
+
+test("applies a tighter limit to expensive analysis requests", async (context) => {
+  const app = createApp({
+    analysisService: null,
+    sessionRepository: null,
+    rateLimitPolicies: { analysis: { limit: 1, windowMs: 60_000 } },
+  });
+  context.after(() => app.close());
+
+  const first = await app.inject({ method: "POST", url: "/analyses", payload: {} });
+  const second = await app.inject({ method: "POST", url: "/analyses", payload: {} });
+
+  assert.equal(first.statusCode, 400);
+  assert.equal(second.statusCode, 429);
+  assert.equal(second.json().error.code, "RATE_LIMITED");
+});
+
+test("requires an explicit secure CORS origin in production and adds safe response headers", async (context) => {
+  assert.throws(
+    () => createApp({ analysisService: null, sessionRepository: null, production: true }),
+    /WEB_ORIGIN/,
+  );
+  const app = createApp({
+    analysisService: null,
+    sessionRepository: null,
+    production: true,
+    webOrigin: "https://curriculus.example",
+  });
+  context.after(() => app.close());
+
+  const allowed = await app.inject({
+    method: "GET",
+    url: "/health",
+    headers: { origin: "https://curriculus.example" },
+  });
+  const denied = await app.inject({
+    method: "GET",
+    url: "/health",
+    headers: { origin: "https://attacker.example" },
+  });
+  const preflight = await app.inject({
+    method: "OPTIONS",
+    url: "/sessions/4e4f8a8c-7c1f-4fa7-a5a5-83eb983437ea/data",
+    headers: {
+      origin: "https://curriculus.example",
+      "access-control-request-method": "DELETE",
+      "access-control-request-headers": "authorization,content-type",
+    },
+  });
+
+  assert.equal(allowed.headers["access-control-allow-origin"], "https://curriculus.example");
+  assert.equal(denied.headers["access-control-allow-origin"], undefined);
+  assert.equal(preflight.headers["access-control-allow-origin"], "https://curriculus.example");
+  assert.match(preflight.headers["access-control-allow-methods"] ?? "", /DELETE/);
+  assert.equal(allowed.headers["x-content-type-options"], "nosniff");
+  assert.equal(allowed.headers["x-frame-options"], "DENY");
+  assert.equal(allowed.headers["referrer-policy"], "no-referrer");
+  assert.match(String(allowed.headers["content-security-policy"]), /default-src 'none'/);
+});
+
+test("rejects an unsafe configured reverse-proxy hop count", () => {
+  assert.throws(
+    () => createApp({ analysisService: null, sessionRepository: null, trustedProxyHops: 6 }),
+    /TRUST_PROXY_HOPS/,
+  );
+});
+
+test("protects metrics with a strong bearer secret and uses only bounded route labels", async (context) => {
+  const secret = "metrics-secret-with-at-least-32-random-bytes";
+  const app = createApp({
+    analysisService: null,
+    sessionRepository: null,
+    metricsToken: secret,
+    dataDeletionService: { async deleteSessionData() { return "deleted" as const; } },
+  });
+  context.after(() => app.close());
+
+  const sessionId = "4e4f8a8c-7c1f-4fa7-a5a5-83eb983437ea";
+  await app.inject({ method: "DELETE", url: `/sessions/${sessionId}/data?email=private@example.test` });
+  const unauthorized = await app.inject({ method: "GET", url: "/metrics" });
+  const metrics = await app.inject({
+    method: "GET",
+    url: "/metrics",
+    headers: { authorization: `Bearer ${secret}` },
+  });
+
+  assert.equal(unauthorized.statusCode, 404);
+  assert.equal(metrics.statusCode, 200);
+  assert.match(metrics.headers["content-type"] ?? "", /text\/plain/);
+  assert.match(metrics.body, /route="\/sessions\/:sessionId\/data"/);
+  assert.equal(metrics.body.includes(sessionId), false);
+  assert.equal(metrics.body.includes("private@example.test"), false);
+});
+
 test("deletes a session's data through an idempotent, bodyless endpoint", async (context) => {
   let deletedSessionId = "";
   const app = createApp({

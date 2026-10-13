@@ -1,6 +1,7 @@
 import type { SessionRepository } from "../persistence/session-repository.js";
 import { MercadoPagoPixPaymentProvider } from "./mercadopago-pix-provider.js";
 import { PixPaymentService } from "./pix-payment-service.js";
+import { isStrongSecret } from "../security/server-configuration.js";
 
 export function createConfiguredPixPaymentService(
   repository: SessionRepository,
@@ -10,7 +11,7 @@ export function createConfiguredPixPaymentService(
 
   const accessToken = environment.MERCADOPAGO_ACCESS_TOKEN?.trim();
   const webhookSecret = environment.MERCADOPAGO_WEBHOOK_SECRET?.trim();
-  if (!accessToken || !webhookSecret) return undefined;
+  if (!isStrongSecret(accessToken) || !isStrongSecret(webhookSecret)) return undefined;
 
   return new PixPaymentService(repository, new MercadoPagoPixPaymentProvider(accessToken));
 }

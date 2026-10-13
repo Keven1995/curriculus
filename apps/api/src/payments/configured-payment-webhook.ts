@@ -1,6 +1,7 @@
 import type { SessionRepository } from "../persistence/session-repository.js";
 import { MercadoPagoPixPaymentProvider } from "./mercadopago-pix-provider.js";
 import { PaymentWebhookService, type PaymentWebhookServiceContract } from "./payment-webhook-service.js";
+import { isStrongSecret } from "../security/server-configuration.js";
 
 export type PaymentWebhookEndpoint = {
   secret: string;
@@ -13,7 +14,7 @@ export function createConfiguredPaymentWebhook(
 ): PaymentWebhookEndpoint | undefined {
   const accessToken = environment.MERCADOPAGO_ACCESS_TOKEN?.trim();
   const secret = environment.MERCADOPAGO_WEBHOOK_SECRET?.trim();
-  if (!accessToken || !secret) return undefined;
+  if (!isStrongSecret(accessToken) || !isStrongSecret(secret)) return undefined;
 
   const provider = new MercadoPagoPixPaymentProvider(accessToken);
   return {

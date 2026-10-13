@@ -31,9 +31,48 @@ import { validateDocumentRequest } from "./documents/document-request.js";
 import { DocumentServiceError, type DocumentService } from "./documents/document-service.js";
 import { createConfiguredDataDeletionService } from "./privacy/configured-data-deletion-service.js";
 import { DataDeletionServiceError, type DataDeletionService } from "./privacy/data-deletion-service.js";
+import { HttpMetrics } from "./security/http-metrics.js";
+import { InMemoryRateLimiter, type RateLimitPolicy } from "./security/in-memory-rate-limiter.js";
+import {
+  isStrongSecret,
+  matchesBearerSecret,
+  parseTrustedProxyHops,
+  resolveCorsOrigin,
+} from "./security/server-configuration.js";
+
+type RateLimitScope =
+  | "global"
+  | "analysis"
+  | "deletion"
+  | "payment"
+  | "paymentStatus"
+  | "documentGeneration"
+  | "documentDownload"
+  | "webhook";
+
+type RateLimitRequest = { ip: string };
+type RateLimitReply = {
+  header(name: string, value: string): unknown;
+  status(code: number): { send(payload: unknown): unknown };
+};
+
+const DEFAULT_RATE_LIMITS: Record<RateLimitScope, RateLimitPolicy> = {
+  global: { limit: 120, windowMs: 60_000 },
+  analysis: { limit: 5, windowMs: 15 * 60_000 },
+  deletion: { limit: 10, windowMs: 15 * 60_000 },
+  payment: { limit: 10, windowMs: 15 * 60_000 },
+  paymentStatus: { limit: 60, windowMs: 60_000 },
+  documentGeneration: { limit: 10, windowMs: 15 * 60_000 },
+  documentDownload: { limit: 30, windowMs: 60_000 },
+  webhook: { limit: 300, windowMs: 60_000 },
+};
 
 type AppOptions = {
   webOrigin?: string;
+  production?: boolean;
+  trustedProxyHops?: number;
+  metricsToken?: string | null;
+  rateLimitPolicies?: Partial<Record<RateLimitScope, RateLimitPolicy>>;
   logger?: boolean;
   analysisService?: AnalysisService | null;
   sessionRepository?: SessionRepository | null;
@@ -56,6 +95,54 @@ const issueMessages: Record<AnalysisRequestIssue["code"], string> = {
 };
 
 export function createApp(options: AppOptions = {}): FastifyInstance {
+  const production = options.production ?? process.env.NODE_ENV === "production";
+  const corsOrigin = resolveCorsOrigin(
+    options.webOrigin ?? process.env.WEB_ORIGIN,
+    production,
+  );
+  if (production && !corsOrigin) {
+    throw new Error("WEB_ORIGIN must be configured as one HTTPS origin in production.");
+  }
+  const configuredProxyHops = process.env.TRUST_PROXY_HOPS;
+  const parsedProxyHops = parseTrustedProxyHops(configuredProxyHops);
+  if (configuredProxyHops !== undefined && configuredProxyHops.trim() !== String(parsedProxyHops)) {
+    throw new Error("TRUST_PROXY_HOPS must be an integer from 0 to 5.");
+  }
+  const trustedProxyHops = options.trustedProxyHops ?? parsedProxyHops;
+  if (!Number.isInteger(trustedProxyHops) || trustedProxyHops < 0 || trustedProxyHops > 5) {
+    throw new Error("TRUST_PROXY_HOPS must be an integer from 0 to 5.");
+  }
+  const metricsToken = options.metricsToken === undefined
+    ? process.env.METRICS_TOKEN
+    : options.metricsToken ?? undefined;
+  const metrics = new HttpMetrics();
+  const rateLimiter = new InMemoryRateLimiter();
+  const rateLimitPolicies: Record<RateLimitScope, RateLimitPolicy> = {
+    ...DEFAULT_RATE_LIMITS,
+    ...options.rateLimitPolicies,
+  };
+
+  const rateLimitHook = (scope: RateLimitScope): (
+    request: RateLimitRequest,
+    reply: RateLimitReply,
+  ) => Promise<void> => async (request, reply) => {
+    const policy = rateLimitPolicies[scope];
+    const decision = rateLimiter.consume(scope, request.ip, policy);
+    reply.header("x-ratelimit-limit", String(policy.limit));
+    reply.header("x-ratelimit-remaining", String(decision.remaining));
+    reply.header("x-ratelimit-reset", String(Math.ceil(Date.now() / 1_000) + decision.retryAfterSeconds));
+    if (decision.allowed) return;
+
+    reply.header("retry-after", String(decision.retryAfterSeconds));
+    await reply.status(429).send({
+      error: {
+        code: "RATE_LIMITED",
+        message: "Muitas solicitações. Aguarde antes de tentar novamente.",
+        retryAfterSeconds: decision.retryAfterSeconds,
+      },
+    });
+  };
+
   const analysisService =
     options.analysisService === undefined
       ? createConfiguredAnalysisService()
@@ -91,11 +178,32 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
   const app = Fastify({
     logger: options.logger ?? false,
     bodyLimit: ANALYSIS_REQUEST_LIMITS.bodyBytes,
+    trustProxy: trustedProxyHops === 0
+      ? false
+      : (_address, hop) => hop < trustedProxyHops,
     logController: new LogController({ disableRequestLogging: true }),
   });
 
   void app.register(cors, {
-    origin: options.webOrigin ?? process.env.WEB_ORIGIN ?? "http://localhost:3000",
+    origin: corsOrigin
+      ? (origin, callback) => callback(null, origin === corsOrigin)
+      : false,
+    methods: ["GET", "HEAD", "POST", "DELETE", "OPTIONS"],
+    allowedHeaders: ["authorization", "content-type", "x-request-id", "x-signature"],
+    maxAge: 600,
+  });
+
+  app.addHook("onRequest", rateLimitHook("global"));
+  app.addHook("onResponse", async (request, reply) => {
+    metrics.record(request.method, request.routeOptions.url, reply.statusCode);
+  });
+  app.addHook("onSend", async (request, reply, payload) => {
+    reply.header("x-content-type-options", "nosniff");
+    reply.header("x-frame-options", "DENY");
+    if (!reply.hasHeader("referrer-policy")) reply.header("referrer-policy", "no-referrer");
+    reply.header("content-security-policy", "default-src 'none'; frame-ancestors 'none'; base-uri 'none'");
+    reply.header("permissions-policy", "camera=(), microphone=(), geolocation=()");
+    return payload;
   });
 
   if (sessionRepository && options.sessionRepository === undefined) {
@@ -186,7 +294,19 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
 
   app.get("/health", async () => ({ status: "ok", service: "curriculus-api" }));
 
-  app.delete<{ Params: { sessionId: string } }>("/sessions/:sessionId/data", async (request, reply) => {
+  app.get("/metrics", async (request, reply) => {
+    if (!isStrongSecret(metricsToken) || !matchesBearerSecret(metricsToken, request.headers.authorization)) {
+      return reply.status(404).send({ error: { code: "NOT_FOUND", message: "Rota não encontrada." } });
+    }
+    return reply
+      .header("content-type", "text/plain; version=0.0.4; charset=utf-8")
+      .header("cache-control", "no-store")
+      .send(metrics.renderPrometheus());
+  });
+
+  app.delete<{ Params: { sessionId: string } }>("/sessions/:sessionId/data", {
+    onRequest: [rateLimitHook("deletion")],
+  }, async (request, reply) => {
     reply.header("cache-control", "no-store");
     if (!dataDeletionService) {
       return reply.status(503).send({
@@ -226,7 +346,7 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
     }
   });
 
-  app.post("/analyses", async (request, reply) => {
+  app.post("/analyses", { onRequest: [rateLimitHook("analysis")] }, async (request, reply) => {
     const validation = validateAnalysisRequest(request.body);
 
     if (!validation.success) {
@@ -291,7 +411,6 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
       request.log.info(
         {
           event: "analysis_completed",
-          sessionId: session.id,
           inputTokens: result.usage.inputTokens,
           outputTokens: result.usage.outputTokens,
           totalTokens: result.usage.totalTokens,
@@ -364,7 +483,9 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
     }
   });
 
-  app.post<{ Params: { sessionId: string } }>("/sessions/:sessionId/payments/pix", async (request, reply) => {
+  app.post<{ Params: { sessionId: string } }>("/sessions/:sessionId/payments/pix", {
+    onRequest: [rateLimitHook("payment")],
+  }, async (request, reply) => {
     const validation = validatePixPaymentRequest(request.body);
     if (!validation.success) {
       return reply.status(400).send({
@@ -443,7 +564,9 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
     }
   });
 
-  app.get<{ Params: { sessionId: string } }>("/sessions/:sessionId/payments/status", async (request, reply) => {
+  app.get<{ Params: { sessionId: string } }>("/sessions/:sessionId/payments/status", {
+    onRequest: [rateLimitHook("paymentStatus")],
+  }, async (request, reply) => {
     reply.header("cache-control", "no-store");
     if (!sessionRepository) {
       return reply.status(503).send({
@@ -472,7 +595,9 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
     }
   });
 
-  app.post<{ Params: { sessionId: string } }>("/sessions/:sessionId/documents", async (request, reply) => {
+  app.post<{ Params: { sessionId: string } }>("/sessions/:sessionId/documents", {
+    onRequest: [rateLimitHook("documentGeneration")],
+  }, async (request, reply) => {
     const validation = validateDocumentRequest(request.body);
     if (!validation.success) {
       return reply.status(400).send({
@@ -533,7 +658,9 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
     }
   });
 
-  app.get<{ Params: { sessionId: string }; Querystring: { token?: string } }>("/documents/:sessionId", async (request, reply) => {
+  app.get<{ Params: { sessionId: string }; Querystring: { token?: string } }>("/documents/:sessionId", {
+    onRequest: [rateLimitHook("documentDownload")],
+  }, async (request, reply) => {
     reply.header("cache-control", "private, no-store, max-age=0").header("referrer-policy", "no-referrer");
     if (!documentService || typeof request.query.token !== "string") {
       return reply.status(404).send({
@@ -569,7 +696,7 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
     }
   });
 
-  app.post("/webhooks/mercadopago", async (request, reply) => {
+  app.post("/webhooks/mercadopago", { onRequest: [rateLimitHook("webhook")] }, async (request, reply) => {
     const query = request.query as Record<string, unknown>;
     const body = isRecord(request.body) ? request.body : undefined;
     const isPaymentEvent =

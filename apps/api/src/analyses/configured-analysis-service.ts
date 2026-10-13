@@ -1,6 +1,7 @@
 import { getEncoding, type TiktokenEncoding } from "js-tiktoken";
 import { createAnalysisService, type AnalysisPricing, type TokenCounter } from "./analysis-service.js";
 import { OpenAIResponsesProvider } from "./openai-responses-provider.js";
+import { isStrongSecret } from "../security/server-configuration.js";
 
 export const ANALYSIS_TOKEN_BUDGET = {
   input: 30_000,
@@ -38,7 +39,7 @@ export function createConfiguredAnalysisService(
   const model = environment.OPENAI_MODEL?.trim();
   const encoding = environment.OPENAI_TOKENIZER_ENCODING?.trim();
 
-  if (!apiKey || !model || !encoding || !supportedEncodings.has(encoding)) {
+  if (!isStrongSecret(apiKey) || !model || !encoding || !supportedEncodings.has(encoding)) {
     return undefined;
   }
 
