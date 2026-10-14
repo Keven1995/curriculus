@@ -2,6 +2,7 @@ export type ResumeLayoutImportResponse = {
   templateId?: string;
   resumeText: string;
   layoutAvailable: boolean;
+  layoutWarnings: string[];
   expiresAt: string;
 };
 
@@ -53,13 +54,25 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function validImportResponse(value: unknown): value is ResumeLayoutImportResponse {
-  if (!isRecord(value)) return false;
-  return typeof value.resumeText === "string" && value.resumeText.trim().length > 0 &&
-    Array.from(value.resumeText).length <= 80_000 && typeof value.layoutAvailable === "boolean" &&
-    (value.templateId === undefined || (typeof value.templateId === "string" && value.templateId.length > 0)) &&
-    (!value.layoutAvailable || typeof value.templateId === "string") &&
-    typeof value.expiresAt === "string" && !Number.isNaN(Date.parse(value.expiresAt));
+function normalizeImportResponse(value: unknown): ResumeLayoutImportResponse | undefined {
+  if (!isRecord(value)) return undefined;
+  const warnings = value.layoutWarnings === undefined ? [] : value.layoutWarnings;
+  if (
+    typeof value.resumeText !== "string" || !value.resumeText.trim() || Array.from(value.resumeText).length > 80_000 ||
+    typeof value.layoutAvailable !== "boolean" ||
+    (value.templateId !== undefined && (typeof value.templateId !== "string" || !value.templateId)) ||
+    (value.layoutAvailable && typeof value.templateId !== "string") ||
+    typeof value.expiresAt !== "string" || Number.isNaN(Date.parse(value.expiresAt)) ||
+    !Array.isArray(warnings) || warnings.length > 8 ||
+    !warnings.every((warning) => typeof warning === "string" && warning.length > 0 && warning.length <= 240)
+  ) return undefined;
+  return {
+    resumeText: value.resumeText,
+    layoutAvailable: value.layoutAvailable,
+    layoutWarnings: warnings as string[],
+    expiresAt: value.expiresAt,
+    ...(typeof value.templateId === "string" ? { templateId: value.templateId } : {}),
+  };
 }
 
 export async function isResumeLayoutFeatureEnabled(options: RequestOptions = {}): Promise<boolean> {
@@ -101,8 +114,9 @@ export async function importReferencePdf(file: File, options: RequestOptions = {
   }
   const payload = await safeJson(response);
   if (!response.ok) throwApiError(payload, "INVALID_PDF");
-  if (!validImportResponse(payload)) throwApiError(payload);
-  return payload;
+  const imported = normalizeImportResponse(payload);
+  if (!imported) throwApiError(payload);
+  return imported;
 }
 
 export async function deleteImportedLayout(templateId: string, options: RequestOptions = {}): Promise<void> {

@@ -47,6 +47,7 @@ export class ResumeLayoutService {
       template: extracted.template,
       resumeText: extracted.resumeText,
       layoutAvailable: extracted.layoutAvailable,
+      layoutWarnings: extracted.layoutWarnings,
       rawExtraction: extracted.rawExtraction,
       detectedSections: extracted.detectedSections,
       expiresAt: expiresAt.toISOString(),

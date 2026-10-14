@@ -161,6 +161,7 @@ test("exposes local layout import and accepts the original PDF as raw bytes", as
           template: { id: "sidebar-dark-header-color-v1" },
           resumeText: "Texto extraído do PDF.",
           layoutAvailable: true,
+          layoutWarnings: ["Fidelidade visual aproximada."],
           rawExtraction: { pages: [] },
           detectedSections: [],
           expiresAt: new Date(Date.now() + 60_000).toISOString(),
@@ -204,6 +205,7 @@ test("exposes local layout import and accepts the original PDF as raw bytes", as
   assert.equal("template" in imported.json(), false);
   assert.equal(imported.json().resumeText, "Texto extraído do PDF.");
   assert.equal(imported.json().layoutAvailable, true);
+  assert.deepEqual(imported.json().layoutWarnings, ["Fidelidade visual aproximada."]);
 });
 
 test("attaches only the server-extracted layout template to the analysis session", async (context) => {

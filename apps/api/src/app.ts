@@ -948,6 +948,7 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
       const result = {
         resumeText: imported.resumeText,
         layoutAvailable: imported.layoutAvailable,
+        layoutWarnings: imported.layoutWarnings,
         expiresAt: imported.expiresAt,
         ...(imported.layoutAvailable ? { templateId: imported.templateId } : {}),
       };

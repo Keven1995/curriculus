@@ -141,11 +141,17 @@ export function AnalysisFlow({ styles, apiBaseUrl, fetcher }: AnalysisFlowProps)
         if (imported.layoutAvailable && imported.templateId) {
           templateId = imported.templateId;
           setLayoutReference({ templateId });
-          setLayoutNotice("Extraímos o currículo. O PDF final tentará preservar o estilo visual original.");
+          const warnings = imported.layoutWarnings.slice(0, 3).join(" ");
+          setLayoutNotice(warnings
+            ? `Extraímos o currículo. O PDF final tentará preservar o estilo visual original. ${warnings}`
+            : "Extraímos o currículo. O PDF final tentará preservar o estilo visual original.");
         } else {
           templateId = undefined;
           setLayoutReference(null);
-          setLayoutNotice("Extraímos o conteúdo, mas não foi possível reaplicar o estilo visual deste PDF. O PDF final usará um formato simples.");
+          const warnings = imported.layoutWarnings.slice(0, 2).join(" ");
+          setLayoutNotice(warnings
+            ? `Extraímos o conteúdo, mas não foi possível reaplicar o estilo visual deste PDF. O PDF final usará um formato simples. ${warnings}`
+            : "Extraímos o conteúdo, mas não foi possível reaplicar o estilo visual deste PDF. O PDF final usará um formato simples.");
         }
       }
       const analysisInput = { ...form, resume };

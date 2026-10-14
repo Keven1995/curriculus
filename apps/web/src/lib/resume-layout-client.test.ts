@@ -31,6 +31,7 @@ test("uploads a PDF as raw bytes and receives only extracted text plus an opaque
   assert.equal(result.templateId, templateResponse.templateId);
   assert.equal(result.resumeText, templateResponse.resumeText);
   assert.equal(result.layoutAvailable, true);
+  assert.deepEqual(result.layoutWarnings, []);
   assert.equal(uploadHeaders?.get("content-type"), "application/pdf");
   assert.equal(uploadHeaders?.get("x-file-name"), "referencia.pdf");
   assert.deepEqual(Array.from(uploadBody as Uint8Array), [0x25, 0x50, 0x44, 0x46, 0x2d, 1]);

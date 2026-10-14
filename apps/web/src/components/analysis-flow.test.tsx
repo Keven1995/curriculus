@@ -124,6 +124,7 @@ test("carries an uploaded reference layout through AI review to the existing app
     templateId: "4e4f8a8c-7c1f-4fa7-a5a5-83eb983437ea",
     resumeText: "Desenvolvi APIs.",
     layoutAvailable: true,
+    layoutWarnings: ["A preservação visual é aproximada; confira o PDF final antes de usá-lo."],
     expiresAt: "2026-01-02T00:00:00.000Z",
   };
   const fetcher: typeof fetch = async (url, init) => {
@@ -156,7 +157,8 @@ test("carries an uploaded reference layout through AI review to the existing app
   });
   fireEvent.click(screen.getByRole("checkbox"));
   fireEvent.click(screen.getByRole("button", { name: /gerar sugestões/i }));
-  await screen.findByText("Extraímos o currículo. O PDF final tentará preservar o estilo visual original.");
+  await screen.findByText(/Extraímos o currículo\. O PDF final tentará preservar o estilo visual original\./);
+  assert.ok(screen.getByText(/A preservação visual é aproximada/));
   await screen.findByRole("heading", { name: "Revise as sugestões" });
 
   assert.equal(submittedAnalysis.length, 1);
