@@ -1,0 +1,29 @@
+.spotlightCard {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  border: 1px solid rgb(188 231 208 / 24%);
+  border-radius: 30px;
+  background-color: #12382f;
+  box-shadow: 0 35px 90px rgb(17 50 40 / 22%), inset 0 1px 0 rgb(255 255 255 / 9%);
+}
+
+.spotlightCard::before {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  background-image: linear-gradient(145deg, rgb(255 255 255 / 6%), transparent 46%);
+  content: "";
+  pointer-events: none;
+}
+
+.spotlightContent {
+  position: relative;
+  z-index: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spotlightCard {
+    background-image: none !important;
+  }
+}

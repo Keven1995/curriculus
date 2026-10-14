@@ -28,6 +28,29 @@ async function createAnalysis(page: Page, request: APIRequestContext): Promise<s
   return result.sessionId;
 }
 
+test("presents the new landing page and its clear path to the analysis form", async ({ page }) => {
+  const hydrationIssues: string[] = [];
+  page.on("console", (message) => {
+    if (/hydrated|server rendered HTML|nativeButton|native button semantics/i.test(message.text())) {
+      hydrationIssues.push(message.text());
+    }
+  });
+  await page.goto("/");
+
+  await expect(page.getByRole("heading", { level: 1, name: /Um currículo mais alinhado à vaga/ })).toBeVisible();
+  await expect(page.getByText("EXEMPLO DE REVISÃO")).toBeVisible();
+  await expect(page.getByText("R$ 1,99")).toBeVisible();
+  const wordMargins = await page.locator("#page-title .heroAccent > span > span").evaluateAll((words) =>
+    words.map((word) => Number.parseFloat(getComputedStyle(word).marginRight)),
+  );
+  expect(wordMargins.slice(0, -1).every((margin) => margin > 0)).toBe(true);
+  await page.waitForTimeout(1_100);
+  expect(hydrationIssues).toEqual([]);
+
+  await page.getByRole("link", { name: /Começar minha análise/ }).click();
+  await expect(page.getByLabel(/Descrição da vaga/)).toBeInViewport();
+});
+
 test("completes analysis, review, sandbox Pix webhook, private PDF download and retention", async ({ page, request }) => {
   const sessionId = await createAnalysis(page, request);
 
