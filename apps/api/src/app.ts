@@ -2,8 +2,11 @@ import cors from "@fastify/cors";
 import Fastify, {
   LogController,
   type FastifyInstance,
+  type FastifyRequest,
   type FastifyLoggerOptions,
 } from "fastify";
+import { createHmac, randomBytes } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import {
   ANALYSIS_REQUEST_LIMITS,
   validateAnalysisRequest,
@@ -147,6 +150,12 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
     ? process.env.METRICS_TOKEN
     : options.metricsToken ?? undefined;
   const metrics = new HttpMetrics();
+  const requestStartedAt = new WeakMap<FastifyRequest, number>();
+  const analysisDeduplicationSecret = randomBytes(32);
+  const analysesInFlight = new Map<string, Promise<{
+    result: Awaited<ReturnType<AnalysisService["analyze"]>>;
+    session: Awaited<ReturnType<SessionRepository["createSession"]>> | null;
+  }>>();
   const rateLimiter = new InMemoryRateLimiter();
   const rateLimitPolicies: Record<RateLimitScope, RateLimitPolicy> = {
     ...DEFAULT_RATE_LIMITS,
@@ -184,7 +193,7 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
       : options.sessionRepository ?? undefined;
   const resumeLayoutService = options.resumeLayoutService === undefined
     ? sessionRepository
-      ? new ResumeLayoutService(sessionRepository)
+      ? new ResumeLayoutService(sessionRepository, Date.now, (durationMs) => metrics.recordStage("extraction", durationMs))
       : undefined
     : options.resumeLayoutService ?? undefined;
   const resumeLayoutImportEnabled = options.resumeLayoutImportEnabled ?? Boolean(options.localTestMode && resumeLayoutService);
@@ -211,7 +220,7 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
   const documentService =
     options.documentService === undefined
       ? sessionRepository
-        ? createConfiguredDocumentService(sessionRepository)
+        ? createConfiguredDocumentService(sessionRepository, process.env, (durationMs) => metrics.recordStage("pdf_generation", durationMs))
         : undefined
       : options.documentService ?? undefined;
   const dataDeletionService =
@@ -246,8 +255,21 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
   });
 
   app.addHook("onRequest", rateLimitHook("global"));
+  app.addHook("onRequest", async (request) => {
+    const startedAt = performance.now();
+    requestStartedAt.set(request, startedAt);
+    if (request.routeOptions.url === "/resume-layouts/import") {
+      // The raw request finishes before Fastify parses the PDF and before extraction begins.
+      request.raw.once("end", () => metrics.recordStage("upload", performance.now() - startedAt));
+    }
+  });
   app.addHook("onResponse", async (request, reply) => {
     metrics.record(request.method, request.routeOptions.url, reply.statusCode);
+    const startedAt = requestStartedAt.get(request);
+    const stage = request.routeOptions.url === "/sessions/:sessionId/documents"
+      ? "review_submission"
+      : undefined;
+    if (startedAt !== undefined && stage) metrics.recordStage(stage, performance.now() - startedAt);
   });
   app.addHook("onSend", async (request, reply, payload) => {
     reply.header("x-content-type-options", "nosniff");
@@ -450,7 +472,8 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
       hasResumeLayout = true;
     }
 
-    if (!validation.data.jobDescription) {
+    const jobDescription = validation.data.jobDescription;
+    if (!jobDescription) {
       return reply.status(422).send({
         error: {
           code: "JOB_DESCRIPTION_REQUIRED",
@@ -488,20 +511,46 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
 
     try {
       const { resumeLayoutTemplateId: _resumeLayoutTemplateId, ...analysisInput } = validation.data;
-      const result = await analysisService.analyze(analysisInput);
-      const sessionInput = {
-        jobUrl: validation.data.jobUrl,
-        jobDescription: validation.data.jobDescription,
-        resume: validation.data.resume,
-        analysis: result.analysis,
-        usage: result.usage,
-      };
-      const session = validation.data.resumeLayoutTemplateId
-        ? await sessionRepository.createSessionWithTemporaryLayout(
-          sessionInput,
-          validation.data.resumeLayoutTemplateId,
-        )
-        : await sessionRepository.createSession(sessionInput);
+      // Coalesce identical in-flight submissions within this API process. The map key is an
+      // HMAC, not the résumé/job text, and the entry is removed on success or failure.
+      const operationKey = createHmac("sha256", analysisDeduplicationSecret)
+        .update(JSON.stringify(validation.data))
+        .digest("hex");
+      let operation = analysesInFlight.get(operationKey);
+      if (!operation) {
+        operation = (async () => {
+          const startedAt = performance.now();
+          let result: Awaited<ReturnType<AnalysisService["analyze"]>>;
+          try {
+            result = await analysisService.analyze(analysisInput);
+          } finally {
+            metrics.recordStage("analysis", performance.now() - startedAt);
+          }
+          const sessionInput = {
+            jobUrl: validation.data.jobUrl,
+            jobDescription,
+            resume: validation.data.resume,
+            analysis: result.analysis,
+            usage: result.usage,
+          };
+          const session = validation.data.resumeLayoutTemplateId
+            ? await sessionRepository.createSessionWithTemporaryLayout(
+              sessionInput,
+              validation.data.resumeLayoutTemplateId,
+            )
+            : await sessionRepository.createSession(sessionInput);
+          return { result, session };
+        })();
+        analysesInFlight.set(operationKey, operation);
+      }
+
+      let outcome: Awaited<typeof operation>;
+      try {
+        outcome = await operation;
+      } finally {
+        if (analysesInFlight.get(operationKey) === operation) analysesInFlight.delete(operationKey);
+      }
+      const { result, session } = outcome;
       if (!session) {
         return reply.status(410).send({
           error: { code: "TEMPLATE_EXPIRED", message: "O estilo visual expirou durante a análise; continue sem reenviar o PDF." },

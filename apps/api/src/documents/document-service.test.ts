@@ -188,6 +188,74 @@ test("uses a validated manually edited final resume only after validating the ap
   assert.equal(invalidStorage.writes.length, 0);
 });
 
+test("coalesces concurrent requests for one reviewed document and renders it only once", async () => {
+  const repository = new MemoryRepository();
+  const storage = new MemoryStorage();
+  let renderCalls = 0;
+  const service = new DocumentService(
+    repository,
+    storage,
+    "a-private-test-secret-with-at-least-32-characters",
+    async (resume) => {
+      renderCalls += 1;
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      return Buffer.from(`PDF:${resume}`);
+    },
+    () => now,
+  );
+
+  const [first, second] = await Promise.all([
+    service.generateDocument(sessionId, ["suggestion-1"], "Final revisado uma vez."),
+    service.generateDocument(sessionId, ["suggestion-1"], "Final revisado uma vez."),
+  ]);
+
+  assert.equal(renderCalls, 1);
+  assert.equal(storage.writes.length, 1);
+  assert.equal(first.created, true);
+  assert.equal(second.created, false);
+  assert.equal(first.downloadPath, second.downloadPath);
+});
+
+test("keeps document persistence idempotent but renders twice across service instances", async () => {
+  const repository = new MemoryRepository();
+  const storage = new MemoryStorage();
+  let renderCalls = 0;
+  let releaseRenderers!: () => void;
+  const bothRenderersStarted = new Promise<void>((resolve) => { releaseRenderers = resolve; });
+  const renderer = async (resume: string) => {
+    renderCalls += 1;
+    if (renderCalls === 2) releaseRenderers();
+    await bothRenderersStarted;
+    return Buffer.from(`PDF:${resume}`);
+  };
+  const firstProcessService = new DocumentService(
+    repository,
+    storage,
+    "a-private-test-secret-with-at-least-32-characters",
+    renderer,
+    () => now,
+  );
+  const secondProcessService = new DocumentService(
+    repository,
+    storage,
+    "a-private-test-secret-with-at-least-32-characters",
+    renderer,
+    () => now,
+  );
+
+  const results = await Promise.all([
+    firstProcessService.generateDocument(sessionId, ["suggestion-1"], "Same reviewed resume."),
+    secondProcessService.generateDocument(sessionId, ["suggestion-1"], "Same reviewed resume."),
+  ]);
+
+  assert.equal(renderCalls, 2);
+  assert.equal(results.filter((result) => result.created).length, 1);
+  assert.equal(storage.writes.length, 2);
+  assert.equal(storage.files.size, 1);
+  assert.equal(storage.deletes.length, 1);
+  assert.equal(results[0]!.downloadPath, results[1]!.downloadPath);
+});
+
 test("rejects invalid final text before rendering and still requires approved payment", async () => {
   const repository = new MemoryRepository();
   const storage = new MemoryStorage();

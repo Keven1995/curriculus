@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test src/lib/intake.test.ts src/lib/resume-pdf.test.ts src/lib/analysis-client.test.ts src/lib/resume-layout-client.test.ts src/lib/payment-client.test.ts src/lib/privacy-client.test.ts src/components/analysis-preview.test.tsx src/components/final-resume-editor.test.tsx src/components/pix-checkout.test.tsx src/components/analysis-flow.test.tsx src/components/session-data-controls.test.tsx"
+    "test": "tsx --test src/lib/intake.test.ts src/lib/resume-pdf.test.ts src/lib/fetch-with-timeout.test.ts src/lib/analysis-client.test.ts src/lib/resume-layout-client.test.ts src/lib/payment-client.test.ts src/lib/privacy-client.test.ts src/components/analysis-preview.test.tsx src/components/final-resume-editor.test.tsx src/components/pix-checkout.test.tsx src/components/analysis-flow.test.tsx src/components/session-data-controls.test.tsx"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",

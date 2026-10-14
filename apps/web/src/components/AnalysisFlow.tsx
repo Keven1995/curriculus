@@ -24,6 +24,7 @@ import {
 
 type SelectedLayoutReference = { templateId: string };
 type ResumeSource = "manual" | "pdf_pending" | "pdf_imported";
+type AnalysisProgressStage = "uploading" | "extracting" | "analyzing";
 
 type AnalysisFlowProps = {
   styles: Record<string, string>;
@@ -47,7 +48,8 @@ export function AnalysisFlow({ styles, apiBaseUrl, fetcher }: AnalysisFlowProps)
   const [finalResumeAppliedSuggestionIds, setFinalResumeAppliedSuggestionIds] = useState<string[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [deletionNotice, setDeletionNotice] = useState(false);
-  const [isReadingPdf, setIsReadingPdf] = useState(false);
+  const [progressStage, setProgressStage] = useState<AnalysisProgressStage | null>(null);
+  const [progressIncludesPdf, setProgressIncludesPdf] = useState(false);
   const [resumePdfError, setResumePdfError] = useState("");
   const [resumePdfName, setResumePdfName] = useState("");
   const [resumePdfFile, setResumePdfFile] = useState<File | null>(null);
@@ -55,6 +57,7 @@ export function AnalysisFlow({ styles, apiBaseUrl, fetcher }: AnalysisFlowProps)
   const [layoutReference, setLayoutReference] = useState<SelectedLayoutReference | null>(null);
   const [layoutNotice, setLayoutNotice] = useState("");
   const previewTitleRef = useRef<HTMLHeadingElement>(null);
+  const analysisRequestInFlight = useRef(false);
 
   useEffect(() => {
     if (analysisResponse) previewTitleRef.current?.focus();
@@ -113,7 +116,7 @@ export function AnalysisFlow({ styles, apiBaseUrl, fetcher }: AnalysisFlowProps)
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (isSubmitting) return;
+    if (isSubmitting || analysisRequestInFlight.current) return;
     const hasPendingPdf = resumeSource === "pdf_pending" && resumePdfFile !== null;
     const validationErrors = validateIntake(form, { resumePdfSelected: hasPendingPdf });
     setErrors(validationErrors);
@@ -126,14 +129,21 @@ export function AnalysisFlow({ styles, apiBaseUrl, fetcher }: AnalysisFlowProps)
     setMessage("");
     setAnalysisResponse(null);
     setDecisions({});
+    analysisRequestInFlight.current = true;
     setIsSubmitting(true);
+    setProgressIncludesPdf(hasPendingPdf);
+    setProgressStage(hasPendingPdf ? "uploading" : "analyzing");
     try {
       let resume = form.resume.trim();
       let templateId = layoutReference?.templateId;
       if (hasPendingPdf && resumePdfFile) {
-        setIsReadingPdf(true);
         setResumePdfError("");
-        const imported: ResumeLayoutImportResponse = await importReferencePdf(resumePdfFile, { apiBaseUrl, fetcher });
+        const imported: ResumeLayoutImportResponse = await importReferencePdf(resumePdfFile, {
+          apiBaseUrl,
+          fetcher,
+          onProgress: (stage) => setProgressStage(stage),
+        });
+        setProgressStage("analyzing");
         resume = imported.resumeText;
         setForm((current) => ({ ...current, resume }));
         setResumeSource("pdf_imported");
@@ -188,8 +198,10 @@ export function AnalysisFlow({ styles, apiBaseUrl, fetcher }: AnalysisFlowProps)
           : "Não foi possível concluir a análise. Tente novamente mais tarde.");
       }
     } finally {
+      analysisRequestInFlight.current = false;
       setIsSubmitting(false);
-      setIsReadingPdf(false);
+      setProgressStage(null);
+      setProgressIncludesPdf(false);
     }
   }
 
@@ -230,7 +242,7 @@ export function AnalysisFlow({ styles, apiBaseUrl, fetcher }: AnalysisFlowProps)
           </div>
         </div>
 
-        <form className={styles.form} onSubmit={handleSubmit} noValidate aria-busy={isSubmitting || isReadingPdf}>
+        <form className={styles.form} onSubmit={handleSubmit} noValidate aria-busy={isSubmitting}>
           <div className={styles.field}>
             <label htmlFor="job-description">Descrição da vaga</label>
             <textarea
@@ -252,7 +264,7 @@ export function AnalysisFlow({ styles, apiBaseUrl, fetcher }: AnalysisFlowProps)
               id="resume-pdf"
               type="file"
               accept=".pdf,application/pdf"
-              disabled={isSubmitting || isReadingPdf}
+              disabled={isSubmitting}
               aria-describedby="resume-pdf-help"
               onChange={handleResumePdfChange}
             />
@@ -294,7 +306,7 @@ export function AnalysisFlow({ styles, apiBaseUrl, fetcher }: AnalysisFlowProps)
               rows={9}
               placeholder={resumeSource === "pdf_pending" ? "O texto do PDF aparecerá aqui depois que você iniciar a análise. Também pode colar o currículo manualmente." : "Cole aqui o conteúdo do seu currículo..."}
               value={form.resume}
-              disabled={isSubmitting || isReadingPdf}
+              disabled={isSubmitting}
               onChange={(event) => updateResumeText(event.target.value)}
               aria-invalid={Boolean(errors.resume)}
               aria-describedby={errors.resume ? "resume-help resume-error" : "resume-help"}
@@ -336,20 +348,30 @@ export function AnalysisFlow({ styles, apiBaseUrl, fetcher }: AnalysisFlowProps)
             <p className={styles.error} id="acknowledgement-error">{errors.acknowledged}</p>
           )}
 
-          <button className={styles.submitButton} type="submit" disabled={isSubmitting || isReadingPdf}>
-            {isReadingPdf ? "Lendo currículo…" : isSubmitting ? "Analisando…" : "Gerar sugestões"} <span aria-hidden="true">→</span>
+          <button className={styles.submitButton} type="submit" disabled={isSubmitting}>
+            {isSubmitting && progressStage === "uploading" ? "Enviando PDF…" :
+              isSubmitting && progressStage === "extracting" ? "Lendo currículo…" :
+                isSubmitting ? "Analisando…" : "Gerar sugestões"} <span aria-hidden="true">→</span>
           </button>
           <p className={styles.submitNote}>
             Você revisa cada sugestão, inclusive as correções de escrita. Depois, pode editar e baixar o currículo em texto sem cobrança; o PDF pago é opcional.
           </p>
-          {(message || isSubmitting) && (
-            <p className={isSubmitting || Object.keys(errors).length > 0 ? styles.status : styles.errorStatus}
-              role={isSubmitting || Object.keys(errors).length > 0 ? "status" : "alert"}
-              aria-live={isSubmitting || Object.keys(errors).length > 0 ? "polite" : "assertive"}
-            >
-              {isSubmitting ? "Enviando seus textos para análise…" : message}
-            </p>
-          )}
+          {isSubmitting && progressStage ? (
+            <div className={styles.status} role="status" aria-live="polite" aria-busy="true">
+              {progressIncludesPdf ? (
+                <progress aria-label="Progresso do envio, leitura e análise" max={3}
+                  value={progressStage === "uploading" ? 1 : progressStage === "extracting" ? 2 : 3} />
+              ) : <progress aria-label="Análise do currículo e da vaga" />}
+              <span>{progressStage === "uploading" ? "Etapa 1 de 3 · Enviando o PDF…" :
+                progressStage === "extracting" ? "Etapa 2 de 3 · Lendo o currículo…" :
+                  progressIncludesPdf ? "Etapa 3 de 3 · Analisando currículo e vaga…" : "Analisando currículo e vaga…"}</span>
+            </div>
+          ) : message ? (
+            <p className={Object.keys(errors).length > 0 ? styles.status : styles.errorStatus}
+              role={Object.keys(errors).length > 0 ? "status" : "alert"}
+              aria-live={Object.keys(errors).length > 0 ? "polite" : "assertive"}
+            >{message}</p>
+          ) : null}
         </form>
       </section>
 

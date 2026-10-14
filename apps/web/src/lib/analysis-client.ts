@@ -1,4 +1,5 @@
 import { validateIntake, type IntakeInput } from "./intake";
+import { fetchWithTimeout, RequestTimeoutError } from "./fetch-with-timeout";
 
 export type RequirementStatus =
   | "demonstrated"
@@ -144,6 +145,7 @@ const errorMessages: Record<string, string> = {
   ANALYSIS_FAILED: "Não foi possível concluir a análise. Tente novamente mais tarde.",
   NETWORK_ERROR: "Não foi possível conectar ao serviço. Verifique sua conexão e tente novamente.",
   INVALID_RESPONSE: "O serviço retornou uma resposta inválida. Tente novamente mais tarde.",
+  PROCESSING_TIMEOUT: "A análise está demorando mais que o esperado. Tente novamente; o currículo enviado continua disponível nesta sessão.",
   LAYOUT_IMPORT_NOT_AVAILABLE: "O estilo visual não está disponível. Você pode continuar sem reenviar o PDF.",
   TEMPLATE_EXPIRED: "O estilo visual expirou. Você pode continuar sem reenviar o PDF.",
 };
@@ -168,7 +170,7 @@ export async function requestAnalysis(
   let response: Response;
 
   try {
-    response = await fetcher(`${baseUrl}/analyses`, {
+    response = await fetchWithTimeout(fetcher, `${baseUrl}/analyses`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -177,8 +179,11 @@ export async function requestAnalysis(
           dataNoticeAcknowledged: input.acknowledged,
           ...(options.resumeLayoutTemplateId ? { resumeLayoutTemplateId: options.resumeLayoutTemplateId } : {}),
       }),
-    });
-  } catch {
+    }, 75_000);
+  } catch (error) {
+    if (error instanceof RequestTimeoutError) {
+      throw new AnalysisClientError(errorMessages.PROCESSING_TIMEOUT, "PROCESSING_TIMEOUT");
+    }
     throw new AnalysisClientError(errorMessages.NETWORK_ERROR, "NETWORK_ERROR");
   }
 

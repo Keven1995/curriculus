@@ -1,3 +1,5 @@
+import { fetchWithTimeout, RequestTimeoutError } from "./fetch-with-timeout";
+
 export type ResumeLayoutImportResponse = {
   templateId?: string;
   resumeText: string;
@@ -7,6 +9,8 @@ export type ResumeLayoutImportResponse = {
 };
 
 type RequestOptions = { apiBaseUrl?: string; fetcher?: typeof fetch };
+export type ResumeLayoutImportStage = "uploading" | "extracting";
+type ImportRequestOptions = RequestOptions & { onProgress?: (stage: ResumeLayoutImportStage) => void };
 
 export class ResumeLayoutClientError extends Error {
   constructor(message: string, readonly code: string) {
@@ -75,6 +79,32 @@ function normalizeImportResponse(value: unknown): ResumeLayoutImportResponse | u
   };
 }
 
+function uploadWithProgress(url: string, bytes: Uint8Array, fileName: string, onProgress?: ImportRequestOptions["onProgress"]): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("POST", url);
+    request.responseType = "text";
+    request.timeout = 45_000;
+    request.setRequestHeader("content-type", "application/pdf");
+    request.setRequestHeader("x-file-name", encodeURIComponent(fileName));
+    request.upload.addEventListener("load", () => onProgress?.("extracting"), { once: true });
+    request.addEventListener("error", () => reject(new ResumeLayoutClientError(messages.NETWORK_ERROR!, "NETWORK_ERROR")), { once: true });
+    request.addEventListener("timeout", () => reject(new ResumeLayoutClientError(messages.PROCESSING_TIMEOUT!, "PROCESSING_TIMEOUT")), { once: true });
+    request.addEventListener("abort", () => reject(new ResumeLayoutClientError(messages.NETWORK_ERROR!, "NETWORK_ERROR")), { once: true });
+    request.addEventListener("load", () => {
+      const headers = new Headers();
+      for (const line of request.getAllResponseHeaders().split(/\r?\n/u)) {
+        const separator = line.indexOf(":");
+        if (separator > 0) headers.append(line.slice(0, separator).trim(), line.slice(separator + 1).trim());
+      }
+      resolve(new Response(request.responseText, { status: request.status, statusText: request.statusText, headers }));
+    }, { once: true });
+    onProgress?.("uploading");
+    // `bytes` is created from File.arrayBuffer(), so its backing ArrayBuffer is the exact PDF payload.
+    request.send(bytes.buffer as ArrayBuffer);
+  });
+}
+
 export async function isResumeLayoutFeatureEnabled(options: RequestOptions = {}): Promise<boolean> {
   const fetcher = options.fetcher ?? fetch;
   let response: Response;
@@ -88,7 +118,7 @@ export async function isResumeLayoutFeatureEnabled(options: RequestOptions = {})
   return isRecord(payload) && payload.resumeLayoutImport === true;
 }
 
-export async function importReferencePdf(file: File, options: RequestOptions = {}): Promise<ResumeLayoutImportResponse> {
+export async function importReferencePdf(file: File, options: ImportRequestOptions = {}): Promise<ResumeLayoutImportResponse> {
   if (!file.name.toLowerCase().endsWith(".pdf") || (file.type && file.type.toLowerCase() !== "application/pdf" && file.type.toLowerCase() !== "application/x-pdf")) {
     throw new ResumeLayoutClientError("Selecione um arquivo PDF.", "UNSUPPORTED_FILE");
   }
@@ -101,15 +131,25 @@ export async function importReferencePdf(file: File, options: RequestOptions = {
   const fetcher = options.fetcher ?? fetch;
   let response: Response;
   try {
-    response = await fetcher(`${apiUrl(options)}/resume-layouts/import`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/pdf",
-        "x-file-name": encodeURIComponent(file.name),
-      },
-      body: bytes,
-    });
-  } catch {
+    if (!options.fetcher && typeof XMLHttpRequest !== "undefined") {
+      response = await uploadWithProgress(`${apiUrl(options)}/resume-layouts/import`, bytes, file.name, options.onProgress);
+    } else {
+      options.onProgress?.("uploading");
+      response = await fetchWithTimeout(fetcher, `${apiUrl(options)}/resume-layouts/import`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/pdf",
+          "x-file-name": encodeURIComponent(file.name),
+        },
+        body: bytes,
+      }, 45_000);
+      options.onProgress?.("extracting");
+    }
+  } catch (error) {
+    if (error instanceof RequestTimeoutError) {
+      throw new ResumeLayoutClientError(messages.PROCESSING_TIMEOUT!, "PROCESSING_TIMEOUT");
+    }
+    if (error instanceof ResumeLayoutClientError) throw error;
     throw new ResumeLayoutClientError(messages.NETWORK_ERROR!, "NETWORK_ERROR");
   }
   const payload = await safeJson(response);

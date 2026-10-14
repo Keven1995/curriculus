@@ -31,3 +31,19 @@ test("records known routes using only their registered templates", () => {
     /method="DELETE",route="\/resume-layouts\/:templateId",status_class="2xx"\} 1/,
   );
 });
+
+test("records bounded p50 and p95 operation timings without accepting dynamic labels", () => {
+  const metrics = new HttpMetrics();
+  metrics.recordStage("extraction", 10);
+  metrics.recordStage("extraction", 20);
+  metrics.recordStage("extraction", 30);
+  metrics.recordStage("extraction", 40);
+  metrics.recordStage("extraction", 50);
+  metrics.recordStage("private@example.test", 999);
+
+  const output = metrics.renderPrometheus();
+  assert.match(output, /curriculus_stage_duration_ms\{stage="extraction",quantile="0\.5"\} 30/);
+  assert.match(output, /curriculus_stage_duration_ms\{stage="extraction",quantile="0\.95"\} 48/);
+  assert.match(output, /curriculus_stage_duration_samples\{stage="extraction"\} 5/);
+  assert.equal(output.includes("private@example.test"), false);
+});

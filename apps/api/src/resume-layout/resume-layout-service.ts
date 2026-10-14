@@ -3,11 +3,13 @@ import { RESUME_LAYOUT_LIMITS, type ResumeLayoutImportResponse } from "./resume-
 import type { ResumeLayoutTemplateStore } from "./resume-layout-store.js";
 import { extractPdfLayout } from "./pdf-layout-extractor.js";
 import { ResumeLayoutError } from "./resume-layout-errors.js";
+import { performance } from "node:perf_hooks";
 
 export class ResumeLayoutService {
   constructor(
     private readonly store: ResumeLayoutTemplateStore,
     private readonly now: () => number = Date.now,
+    private readonly recordExtractionDuration: (durationMs: number) => void = () => undefined,
   ) {}
 
   isBackedBy(store: ResumeLayoutTemplateStore): boolean {
@@ -31,10 +33,12 @@ export class ResumeLayoutService {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15_000);
     let extracted;
+    const extractionStartedAt = performance.now();
     try {
       extracted = await extractPdfLayout(bytes, fileName, controller.signal);
     } finally {
       clearTimeout(timeout);
+      this.recordExtractionDuration(performance.now() - extractionStartedAt);
     }
 
     const templateId = randomUUID();

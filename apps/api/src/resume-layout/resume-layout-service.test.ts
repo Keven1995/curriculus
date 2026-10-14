@@ -276,6 +276,17 @@ test("extracts bounded technical text/layout JSON and detects headings without r
   assert.equal(extracted.rawExtraction.images.reused_in_output, false);
 });
 
+test("records extraction time without adding document content to performance observations", async () => {
+  const durations: number[] = [];
+  const service = new ResumeLayoutService(new MemoryResumeLayoutStore(), Date.now, (durationMs) => durations.push(durationMs));
+
+  await service.importPdf(await createReferencePdf(), "synthetic.pdf");
+  await assert.rejects(service.importPdf(Buffer.from("%PDF-invalid"), "invalid.pdf"));
+
+  assert.equal(durations.length, 2);
+  assert.ok(durations.every((duration) => Number.isFinite(duration) && duration >= 0));
+});
+
 test("rejects invalid, scanned, oversized and over-paginated reference PDFs safely", async () => {
   await assert.rejects(extractPdfLayout(Buffer.from("not a PDF"), "bad.pdf"), (error: unknown) =>
     error instanceof ResumeLayoutError && error.code === "invalid_pdf");

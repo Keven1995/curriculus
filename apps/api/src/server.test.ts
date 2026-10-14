@@ -112,6 +112,118 @@ test("applies an independent daily per-IP analysis limit", async (context) => {
   assert.equal(calls, 1);
 });
 
+test("coalesces identical concurrent analysis submissions and creates one session", async (context) => {
+  let analysisCalls = 0;
+  let sessionCalls = 0;
+  const app = createApp({
+    analysisService: {
+      async analyze() {
+        analysisCalls += 1;
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        return {
+          analysis: { jobRequirements: [], suggestions: [], documentStructure: { sectionOrder: [], suggestionOrder: [] } },
+          usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2, estimatedCostUsd: null },
+        };
+      },
+    },
+    sessionRepository: {
+      async isReady() { return true; },
+      async createSession() {
+        sessionCalls += 1;
+        return {
+          id: `concurrent-session-${sessionCalls}`,
+          createdAt: new Date(),
+          expiresAt: new Date(Date.now() + 60_000),
+        };
+      },
+    } as never,
+  });
+  context.after(() => app.close());
+
+  const [first, second] = await Promise.all([
+    app.inject({ method: "POST", url: "/analyses", payload: validRequest }),
+    app.inject({ method: "POST", url: "/analyses", payload: validRequest }),
+  ]);
+
+  assert.equal(first.statusCode, 201);
+  assert.equal(second.statusCode, 201);
+  assert.equal(analysisCalls, 1);
+  assert.equal(sessionCalls, 1);
+  assert.equal(first.json().sessionId, second.json().sessionId);
+});
+
+test("documents that analysis deduplication does not cross API process instances", async (context) => {
+  let analysisCalls = 0;
+  let sessionCalls = 0;
+  const analysisService = {
+    async analyze() {
+      analysisCalls += 1;
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      return {
+        analysis: { jobRequirements: [], suggestions: [], documentStructure: { sectionOrder: [], suggestionOrder: [] } },
+        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2, estimatedCostUsd: null },
+      };
+    },
+  };
+  const sessionRepository = {
+    async isReady() { return true; },
+    async createSession() {
+      sessionCalls += 1;
+      return {
+        id: `replica-session-${sessionCalls}`,
+        createdAt: new Date(),
+        expiresAt: new Date(Date.now() + 60_000),
+      };
+    },
+  } as never;
+  const firstProcess = createApp({ analysisService, sessionRepository });
+  const secondProcess = createApp({ analysisService, sessionRepository });
+  context.after(async () => {
+    await firstProcess.close();
+    await secondProcess.close();
+  });
+
+  const [first, second] = await Promise.all([
+    firstProcess.inject({ method: "POST", url: "/analyses", payload: validRequest }),
+    secondProcess.inject({ method: "POST", url: "/analyses", payload: validRequest }),
+  ]);
+
+  assert.equal(first.statusCode, 201);
+  assert.equal(second.statusCode, 201);
+  assert.equal(analysisCalls, 2);
+  assert.equal(sessionCalls, 2);
+});
+
+test("releases failed in-flight analysis state so a user can retry", async (context) => {
+  let analysisCalls = 0;
+  const app = createApp({
+    analysisService: {
+      async analyze() {
+        analysisCalls += 1;
+        if (analysisCalls === 1) throw new Error("synthetic provider failure");
+        return {
+          analysis: { jobRequirements: [], suggestions: [], documentStructure: { sectionOrder: [], suggestionOrder: [] } },
+          usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2, estimatedCostUsd: null },
+        };
+      },
+    },
+    sessionRepository: {
+      async isReady() { return true; },
+      async createSession() {
+        return { id: "retry-session", createdAt: new Date(), expiresAt: new Date(Date.now() + 60_000) };
+      },
+    } as never,
+  });
+  context.after(() => app.close());
+
+  const failed = await app.inject({ method: "POST", url: "/analyses", payload: validRequest });
+  const retried = await app.inject({ method: "POST", url: "/analyses", payload: validRequest });
+
+  assert.equal(failed.statusCode, 500);
+  assert.equal(retried.statusCode, 201);
+  assert.equal(analysisCalls, 2);
+});
+
 test("marks the full local test flow in analysis responses", async (context) => {
   const app = createApp({
     localTestMode: true,
@@ -152,6 +264,7 @@ test("exposes local layout import and accepts the original PDF as raw bytes", as
   const importPayload = Buffer.concat([Buffer.from("%PDF-"), Buffer.alloc(300_000, 1)]);
   const app = createApp({
     localTestMode: true,
+    metricsToken: "test-metrics-secret-with-at-least-32-random-bytes",
     resumeLayoutService: {
       async importPdf(bytes, fileName) {
         importedBytes = bytes;
@@ -206,6 +319,13 @@ test("exposes local layout import and accepts the original PDF as raw bytes", as
   assert.equal(imported.json().resumeText, "Texto extraído do PDF.");
   assert.equal(imported.json().layoutAvailable, true);
   assert.deepEqual(imported.json().layoutWarnings, ["Fidelidade visual aproximada."]);
+  const metrics = await app.inject({
+    method: "GET",
+    url: "/metrics",
+    headers: { authorization: "Bearer test-metrics-secret-with-at-least-32-random-bytes" },
+  });
+  assert.equal(metrics.statusCode, 200);
+  assert.match(metrics.body, /curriculus_stage_duration_ms\{stage="upload",quantile="0\.5"\}/);
 });
 
 test("attaches only the server-extracted layout template to the analysis session", async (context) => {

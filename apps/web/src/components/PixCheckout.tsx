@@ -36,6 +36,7 @@ export function PixCheckout({ sessionId, localTestMode = false, usesReferenceLay
   const [isGenerating, setIsGenerating] = useState(false);
   const paymentTitleRef = useRef<HTMLHeadingElement>(null);
   const requestInFlight = useRef(false);
+  const documentRequestInFlight = useRef(false);
   const sortedApprovedIds = [...approvedSuggestionIds].sort();
   const sortedAppliedIds = [...finalResumeAppliedSuggestionIds].sort();
   const draftMatchesApprovals = sortedApprovedIds.length === sortedAppliedIds.length &&
@@ -94,7 +95,8 @@ export function PixCheckout({ sessionId, localTestMode = false, usesReferenceLay
   }
 
   async function generateDocument() {
-    if (isGenerating || paymentStatus !== "approved" || document || !draftMatchesApprovals) return;
+    if (documentRequestInFlight.current || isGenerating || paymentStatus !== "approved" || document || !draftMatchesApprovals) return;
+    documentRequestInFlight.current = true;
     setMessage("");
     setIsGenerating(true);
     try {
@@ -106,12 +108,14 @@ export function PixCheckout({ sessionId, localTestMode = false, usesReferenceLay
     } catch (error) {
       setMessage(error instanceof PaymentClientError ? error.message : "Não foi possível gerar o currículo.");
     } finally {
+      documentRequestInFlight.current = false;
       setIsGenerating(false);
     }
   }
 
   async function generateLocalTestPdf() {
-    if (!localTestMode || isGenerating || document || approvedSuggestionIds.length === 0 || !draftMatchesApprovals) return;
+    if (!localTestMode || documentRequestInFlight.current || isGenerating || document || approvedSuggestionIds.length === 0 || !draftMatchesApprovals) return;
+    documentRequestInFlight.current = true;
     setMessage("");
     setIsGenerating(true);
     try {
@@ -123,6 +127,7 @@ export function PixCheckout({ sessionId, localTestMode = false, usesReferenceLay
     } catch (error) {
       setMessage(error instanceof PaymentClientError ? error.message : "Não foi possível gerar o PDF de teste.");
     } finally {
+      documentRequestInFlight.current = false;
       setIsGenerating(false);
     }
   }
@@ -179,6 +184,7 @@ export function PixCheckout({ sessionId, localTestMode = false, usesReferenceLay
               role={isGenerating || document ? "status" : "alert"}
               aria-live={isGenerating || document ? "polite" : "assertive"}
             >
+              {isGenerating && <progress aria-label="Geração do PDF de teste" />}
               {isGenerating ? "Montando o PDF no armazenamento temporário local…" : message}
             </p>
           )}
@@ -300,6 +306,7 @@ export function PixCheckout({ sessionId, localTestMode = false, usesReferenceLay
                 role={isChecking || isGenerating || feedbackIsStatus ? "status" : "alert"}
                 aria-live={isChecking || isGenerating || feedbackIsStatus ? "polite" : "assertive"}
               >
+                {isGenerating && <progress aria-label="Geração do PDF final" />}
                 {isChecking ? "Consultando a confirmação do Mercado Pago…" : isGenerating ? "Montando o PDF a partir da análise existente…" : message}
               </p>
             )}

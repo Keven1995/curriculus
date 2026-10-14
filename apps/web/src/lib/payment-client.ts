@@ -1,3 +1,5 @@
+import { fetchWithTimeout, RequestTimeoutError } from "./fetch-with-timeout";
+
 export type PixPaymentApiResponse = {
   orderId: string;
   amountCents: 199;
@@ -39,6 +41,7 @@ const paymentErrorMessages: Record<string, string> = {
   PROVIDER_UNAVAILABLE: "Não foi possível gerar o Pix. Tente novamente mais tarde.",
   PAYMENT_FAILED: "Não foi possível gerar o Pix. Tente novamente mais tarde.",
   NETWORK_ERROR: "Não foi possível conectar ao serviço. Verifique sua conexão e tente novamente.",
+  REQUEST_TIMEOUT: "A solicitação está demorando mais que o esperado. Tente novamente; o serviço verificará se já existe um resultado.",
   INVALID_RESPONSE: "O serviço retornou uma resposta inválida. Tente novamente mais tarde.",
   LOCAL_TEST_DOCUMENT_FAILED: "Não foi possível gerar o PDF de teste local. Tente novamente.",
   PAYMENT_NOT_FOUND: "Não foi possível localizar a cobrança desta análise.",
@@ -118,15 +121,17 @@ export async function createPixPayment(
   const fetcher = options.fetcher ?? fetch;
   let response: Response;
   try {
-    response = await fetcher(
+    response = await fetchWithTimeout(fetcher,
       `${baseUrl}/sessions/${encodeURIComponent(sessionId)}/payments/pix`,
       {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ payerEmail: normalizedEmail }),
       },
+      30_000,
     );
-  } catch {
+  } catch (error) {
+    if (error instanceof RequestTimeoutError) throw new PaymentClientError(paymentErrorMessages.REQUEST_TIMEOUT, "REQUEST_TIMEOUT");
     throw new PaymentClientError(paymentErrorMessages.NETWORK_ERROR, "NETWORK_ERROR");
   }
 
@@ -148,11 +153,13 @@ export async function getPixPaymentStatus(
   const fetcher = options.fetcher ?? fetch;
   let response: Response;
   try {
-    response = await fetcher(
+    response = await fetchWithTimeout(fetcher,
       `${baseApiUrl(options)}/sessions/${encodeURIComponent(sessionId)}/payments/status`,
       { method: "GET" },
+      20_000,
     );
-  } catch {
+  } catch (error) {
+    if (error instanceof RequestTimeoutError) throw new PaymentClientError(paymentErrorMessages.REQUEST_TIMEOUT, "REQUEST_TIMEOUT");
     throw new PaymentClientError(paymentErrorMessages.NETWORK_ERROR, "NETWORK_ERROR");
   }
 
@@ -190,15 +197,17 @@ async function requestFinalDocument(
   const fetcher = options.fetcher ?? fetch;
   let response: Response;
   try {
-    response = await fetcher(
+    response = await fetchWithTimeout(fetcher,
       `${baseApiUrl(options)}${path}`,
       {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ approvedSuggestionIds, finalResumeText }),
       },
+      60_000,
     );
-  } catch {
+  } catch (error) {
+    if (error instanceof RequestTimeoutError) throw new PaymentClientError(paymentErrorMessages.REQUEST_TIMEOUT, "REQUEST_TIMEOUT");
     throw new PaymentClientError(paymentErrorMessages.NETWORK_ERROR, "NETWORK_ERROR");
   }
 

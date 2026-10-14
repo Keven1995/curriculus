@@ -11,6 +11,7 @@ import { ApprovedSuggestionsError, buildFinalResume, validateFinalResumeText } f
 import { renderResumePdf } from "./pdf-renderer.js";
 import { renderLayoutTextResumePdf } from "../resume-layout/layout-text-pdf-renderer.js";
 import type { ResumeLayoutTemplate } from "../resume-layout/resume-layout-types.js";
+import { performance } from "node:perf_hooks";
 
 export type DocumentServiceErrorCode =
   | "PERSISTENCE_UNAVAILABLE"
@@ -80,12 +81,15 @@ function isOrderApproved(order: OrderRecord | null): boolean {
 }
 
 export class DocumentService {
+  private readonly generationInFlight = new Map<string, Promise<GeneratedDocumentResponse>>();
+
   constructor(
     private readonly repository: DocumentRepository,
     private readonly storage: PrivateDocumentStorage,
     private readonly accessSecret: string,
     private readonly renderPdf: PdfRenderer = renderSessionResumePdf,
     private readonly now: () => Date = () => new Date(),
+    private readonly recordPdfGenerationDuration: (durationMs: number) => void = () => undefined,
   ) {
     if (Buffer.byteLength(accessSecret, "utf8") < 32) {
       throw new Error("Document download secret must contain at least 32 bytes.");
@@ -114,6 +118,23 @@ export class DocumentService {
   }
 
   async generateDocument(
+    sessionId: string,
+    approvedSuggestionIds: readonly string[],
+    requestedFinalResumeText?: string,
+  ): Promise<GeneratedDocumentResponse> {
+    const pending = this.generationInFlight.get(sessionId);
+    if (pending) return { ...(await pending), created: false };
+
+    const generation = this.generateDocumentOnce(sessionId, approvedSuggestionIds, requestedFinalResumeText);
+    this.generationInFlight.set(sessionId, generation);
+    try {
+      return await generation;
+    } finally {
+      if (this.generationInFlight.get(sessionId) === generation) this.generationInFlight.delete(sessionId);
+    }
+  }
+
+  private async generateDocumentOnce(
     sessionId: string,
     approvedSuggestionIds: readonly string[],
     requestedFinalResumeText?: string,
@@ -161,16 +182,21 @@ export class DocumentService {
 
     let pdf: Buffer;
     let layoutFallback = false;
+    const renderStartedAt = performance.now();
     try {
-      pdf = await this.renderPdf(finalResume, session.resumeLayoutTemplate);
-    } catch {
-      if (!session.resumeLayoutTemplate) throw new DocumentServiceError("DOCUMENT_RENDER_FAILED");
       try {
-        pdf = await this.renderPdf(finalResume);
-        layoutFallback = true;
+        pdf = await this.renderPdf(finalResume, session.resumeLayoutTemplate);
       } catch {
-        throw new DocumentServiceError("DOCUMENT_RENDER_FAILED");
+        if (!session.resumeLayoutTemplate) throw new DocumentServiceError("DOCUMENT_RENDER_FAILED");
+        try {
+          pdf = await this.renderPdf(finalResume);
+          layoutFallback = true;
+        } catch {
+          throw new DocumentServiceError("DOCUMENT_RENDER_FAILED");
+        }
       }
+    } finally {
+      this.recordPdfGenerationDuration(performance.now() - renderStartedAt);
     }
 
     const storageKey = `${randomUUID()}.pdf`;

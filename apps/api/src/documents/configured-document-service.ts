@@ -6,6 +6,7 @@ import { isStrongSecret } from "../security/server-configuration.js";
 export function createConfiguredDocumentService(
   repository: SessionRepository,
   environment: NodeJS.ProcessEnv = process.env,
+  recordPdfGenerationDuration?: (durationMs: number) => void,
 ): DocumentService | undefined {
   const storageDirectory = environment.DOCUMENT_STORAGE_DIR?.trim();
   const accessSecret = environment.DOCUMENT_DOWNLOAD_SECRET?.trim();
@@ -18,5 +19,8 @@ export function createConfiguredDocumentService(
     repository,
     storage,
     accessSecret,
+    undefined,
+    undefined,
+    recordPdfGenerationDuration,
   );
 }
