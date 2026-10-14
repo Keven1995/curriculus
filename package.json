@@ -11,10 +11,13 @@
     "dev": "concurrently -n web,api -c cyan,green \"npm run dev --workspace @curriculus/web\" \"npm run dev --workspace @curriculus/api\"",
     "dev:web": "npm run dev --workspace @curriculus/web",
     "dev:api": "npm run dev --workspace @curriculus/api",
+    "dev:local-ai": "concurrently -n web,api -c cyan,green \"npm run dev --workspace @curriculus/web -- --hostname 127.0.0.1 --port 3000\" \"npm run dev:local-ai --workspace @curriculus/api\"",
+    "test:e2e": "playwright test",
     "build": "npm run build --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.0",
     "concurrently": "^9.1.2",
     "typescript": "^5.8.3"
   },

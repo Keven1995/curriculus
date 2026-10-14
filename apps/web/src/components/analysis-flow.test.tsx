@@ -43,6 +43,63 @@ const apiResponse: AnalysisApiResponse = {
 
 test.afterEach(() => cleanup());
 
+test("extracts a selected PDF in the browser and submits only the resulting text", async () => {
+  let submitted: Record<string, unknown> | undefined;
+  let extractedFileName = "";
+  render(
+    <AnalysisFlow
+      styles={styles}
+      apiBaseUrl="https://api.example.test"
+      pdfTextExtractor={async (file) => {
+        extractedFileName = file.name;
+        return "Texto sintético extraído localmente do PDF.";
+      }}
+      fetcher={async (_url, init) => {
+        submitted = JSON.parse(String(init?.body));
+        return new Response(JSON.stringify(apiResponse), { status: 201 });
+      }}
+    />,
+  );
+
+  fireEvent.change(screen.getByLabelText(/Descrição da vaga/), {
+    target: { value: "Vaga para pessoa desenvolvedora" },
+  });
+  fireEvent.change(screen.getByLabelText(/Anexar currículo em PDF/), {
+    target: { files: [new File(["synthetic pdf"], "curriculo.pdf", { type: "application/pdf" })] },
+  });
+  fireEvent.click(screen.getByRole("checkbox"));
+
+  const resumeField = await screen.findByLabelText("Seu currículo em texto") as HTMLTextAreaElement;
+  await waitFor(() => assert.equal(resumeField.value, "Texto sintético extraído localmente do PDF."));
+  assert.equal(extractedFileName, "curriculo.pdf");
+  fireEvent.click(screen.getByRole("button", { name: /gerar sugestões/i }));
+  await screen.findByRole("heading", { name: "Revise as sugestões" });
+
+  assert.equal(submitted?.resume, "Texto sintético extraído localmente do PDF.");
+  assert.equal("file" in (submitted ?? {}), false);
+});
+
+test("shows a safe error and does not replace the current curriculum when PDF extraction fails", async () => {
+  render(
+    <AnalysisFlow
+      styles={styles}
+      pdfTextExtractor={async () => { throw new Error("sensitive parser output"); }}
+      fetcher={async () => { throw new Error("analysis should not start"); }}
+    />,
+  );
+
+  const resumeField = screen.getByLabelText("Seu currículo em texto") as HTMLTextAreaElement;
+  fireEvent.change(resumeField, { target: { value: "Texto escrito manualmente." } });
+  fireEvent.change(screen.getByLabelText(/Anexar currículo em PDF/), {
+    target: { files: [new File(["synthetic pdf"], "curriculo.pdf", { type: "application/pdf" })] },
+  });
+
+  assert.ok(await screen.findByRole("alert"));
+  assert.match(screen.getByRole("alert").textContent ?? "", /PDF|currículo/i);
+  assert.equal(screen.queryByText(/sensitive parser output/), null);
+  assert.equal(resumeField.value, "Texto escrito manualmente.");
+});
+
 function fillValidForm() {
   fireEvent.change(screen.getByLabelText(/Descrição da vaga/), {
     target: { value: "Vaga de pessoa desenvolvedora" },

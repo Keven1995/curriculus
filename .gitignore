@@ -3,6 +3,8 @@ node_modules/
 dist/
 build/
 coverage/
+test-results/
+playwright-report/
 .env
 .env.*
 .vercel/
@@ -16,6 +18,8 @@ coverage/
 
 # Documentação (inclui README.md)
 *.md
+!DEPLOYMENT-RUNBOOK.md
+!LOCAL-DEVELOPMENT.md
 
 # Arquivos locais do sistema operacional e editores
 .DS_Store

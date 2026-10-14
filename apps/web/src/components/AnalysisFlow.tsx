@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useRef, useState, type FormEvent } from "react";
+import React, { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import {
   AnalysisClientError,
   requestAnalysis,
@@ -10,6 +10,7 @@ import {
   type SuggestionDecisions,
 } from "../lib/analysis-client";
 import { validateIntake, type IntakeInput } from "../lib/intake";
+import { extractResumeTextFromPdf, ResumePdfError } from "../lib/resume-pdf";
 import { AnalysisPreview } from "./AnalysisPreview";
 import { PixCheckout } from "./PixCheckout";
 import { SessionDataControls } from "./SessionDataControls";
@@ -18,6 +19,7 @@ type AnalysisFlowProps = {
   styles: Record<string, string>;
   apiBaseUrl?: string;
   fetcher?: typeof fetch;
+  pdfTextExtractor?: typeof extractResumeTextFromPdf;
 };
 
 const emptyForm: IntakeInput = {
@@ -27,7 +29,7 @@ const emptyForm: IntakeInput = {
   acknowledged: false,
 };
 
-export function AnalysisFlow({ styles, apiBaseUrl, fetcher }: AnalysisFlowProps) {
+export function AnalysisFlow({ styles, apiBaseUrl, fetcher, pdfTextExtractor }: AnalysisFlowProps) {
   const [form, setForm] = useState<IntakeInput>(emptyForm);
   const [errors, setErrors] = useState<ReturnType<typeof validateIntake>>({});
   const [message, setMessage] = useState("");
@@ -35,6 +37,9 @@ export function AnalysisFlow({ styles, apiBaseUrl, fetcher }: AnalysisFlowProps)
   const [decisions, setDecisions] = useState<SuggestionDecisions>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [deletionNotice, setDeletionNotice] = useState(false);
+  const [isReadingPdf, setIsReadingPdf] = useState(false);
+  const [resumePdfError, setResumePdfError] = useState("");
+  const [resumePdfName, setResumePdfName] = useState("");
   const previewTitleRef = useRef<HTMLHeadingElement>(null);
 
   useEffect(() => {
@@ -48,6 +53,34 @@ export function AnalysisFlow({ styles, apiBaseUrl, fetcher }: AnalysisFlowProps)
     setAnalysisResponse(null);
     setDecisions({});
     setDeletionNotice(false);
+    setResumePdfError("");
+    if (field === "resume") setResumePdfName("");
+  }
+
+  async function handleResumePdfChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+    if (!file) return;
+
+    setResumePdfError("");
+    setResumePdfName("");
+    setIsReadingPdf(true);
+    try {
+      const text = await (pdfTextExtractor ?? extractResumeTextFromPdf)(file);
+      setForm((current) => ({ ...current, resume: text }));
+      setErrors((current) => ({ ...current, resume: undefined }));
+      setMessage("");
+      setAnalysisResponse(null);
+      setDecisions({});
+      setDeletionNotice(false);
+      setResumePdfName(file.name);
+    } catch (error) {
+      setResumePdfError(error instanceof ResumePdfError
+        ? error.message
+        : "Não foi possível ler o PDF. Confira o arquivo e tente novamente.");
+    } finally {
+      setIsReadingPdf(false);
+    }
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -107,11 +140,11 @@ export function AnalysisFlow({ styles, apiBaseUrl, fetcher }: AnalysisFlowProps)
           <span className={styles.step} aria-hidden="true">01</span>
           <div>
             <h2 id="form-title">Vamos começar pelo contexto</h2>
-            <p>Informe a vaga e cole seu currículo para comparar.</p>
+            <p>Informe a vaga e cole seu currículo ou anexe um PDF para comparar.</p>
           </div>
         </div>
 
-        <form className={styles.form} onSubmit={handleSubmit} noValidate aria-busy={isSubmitting}>
+        <form className={styles.form} onSubmit={handleSubmit} noValidate aria-busy={isSubmitting || isReadingPdf}>
           <div className={styles.field}>
             <label htmlFor="job-url">Link da vaga <span>(opcional)</span></label>
             <input
@@ -148,12 +181,29 @@ export function AnalysisFlow({ styles, apiBaseUrl, fetcher }: AnalysisFlowProps)
 
           <div className={styles.field}>
             <label htmlFor="resume">Seu currículo em texto</label>
+            <label htmlFor="resume-pdf">Anexar currículo em PDF <span>(opcional)</span></label>
+            <input
+              id="resume-pdf"
+              type="file"
+              accept=".pdf,application/pdf"
+              disabled={isSubmitting || isReadingPdf}
+              aria-describedby="resume-pdf-help"
+              onChange={handleResumePdfChange}
+            />
+            <p className={styles.help} id="resume-pdf-help">
+              PDF textual de até 10 MiB e 30 páginas. A leitura acontece neste navegador; somente o texto extraído é enviado para análise. PDFs digitalizados como imagem não são compatíveis.
+            </p>
+            {isReadingPdf && <p className={styles.status} role="status">Lendo o texto do PDF neste navegador…</p>}
+            {resumePdfName && !isReadingPdf && (
+              <p className={styles.help} role="status">Texto extraído de {resumePdfName}. Revise ou edite abaixo antes de continuar.</p>
+            )}
+            {resumePdfError && <p className={styles.error} role="alert">{resumePdfError}</p>}
             <textarea
               id="resume"
               rows={9}
-              placeholder="Cole seu currículo aqui. Você pode incluir experiências, formação e competências relevantes..."
+              placeholder="O texto extraído do PDF aparecerá aqui; você também pode colar ou editar seu currículo..."
               value={form.resume}
-              disabled={isSubmitting}
+              disabled={isSubmitting || isReadingPdf}
               onChange={(event) => updateForm("resume", event.target.value)}
               aria-invalid={Boolean(errors.resume)}
               aria-describedby={errors.resume ? "resume-help resume-error" : "resume-help"}
@@ -169,7 +219,7 @@ export function AnalysisFlow({ styles, apiBaseUrl, fetcher }: AnalysisFlowProps)
             <div>
               <h3 id="privacy-title">Seus dados devem servir apenas a este objetivo</h3>
               <p>
-                Currículo e descrição da vaga são usados para gerar sugestões, não para avaliar sua empregabilidade. Fornecedores necessários processam os dados para prestar o serviço. Sessões sem pagamento expiram em 24 horas; após gerar o PDF, currículo, vaga e análise são apagados e o arquivo expira em outras 24 horas. Você também pode pedir a exclusão antecipada abaixo.
+                Currículo e descrição da vaga são usados para gerar sugestões, não para avaliar sua empregabilidade. Ao anexar um PDF, o texto é extraído neste navegador: o arquivo original não é enviado, mas o texto extraído e a descrição são enviados à OpenAI para análise. Sessões sem pagamento expiram em 24 horas; após gerar o PDF, currículo, vaga e análise são apagados e o arquivo expira em outras 24 horas. Você também pode pedir a exclusão antecipada abaixo.
               </p>
               <p className={styles.prototypeNote}>
                 Consulte os <a href="/privacidade">rascunhos da Política de Privacidade</a> e dos <a href="/termos">Termos de Uso</a>. Eles ainda precisam de revisão jurídica e validação dos fornecedores antes de uso público.
@@ -195,8 +245,8 @@ export function AnalysisFlow({ styles, apiBaseUrl, fetcher }: AnalysisFlowProps)
             <p className={styles.error} id="acknowledgement-error">{errors.acknowledged}</p>
           )}
 
-          <button className={styles.submitButton} type="submit" disabled={isSubmitting}>
-            {isSubmitting ? "Analisando…" : "Gerar sugestões"} <span aria-hidden="true">→</span>
+          <button className={styles.submitButton} type="submit" disabled={isSubmitting || isReadingPdf}>
+            {isReadingPdf ? "Lendo PDF…" : isSubmitting ? "Analisando…" : "Gerar sugestões"} <span aria-hidden="true">→</span>
           </button>
           <p className={styles.submitNote}>
             Você revisa cada sugestão. Aprovar ou rejeitar não inicia cobrança nem gera um documento.
