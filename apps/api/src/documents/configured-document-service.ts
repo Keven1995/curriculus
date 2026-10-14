@@ -1,7 +1,6 @@
 import type { SessionRepository } from "../persistence/session-repository.js";
 import { DocumentService } from "./document-service.js";
 import { createConfiguredPrivateDocumentStorage } from "./configured-private-document-storage.js";
-import { renderResumePdf } from "./pdf-renderer.js";
 import { isStrongSecret } from "../security/server-configuration.js";
 
 export function createConfiguredDocumentService(
@@ -19,6 +18,5 @@ export function createConfiguredDocumentService(
     repository,
     storage,
     accessSecret,
-    renderResumePdf,
   );
 }

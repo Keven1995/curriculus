@@ -26,7 +26,7 @@ export async function deleteSessionData(
 ): Promise<void> {
   if (!sessionId.trim()) throw new PrivacyRequestError(errorMessages.INVALID_SESSION!, "INVALID_SESSION");
 
-  const baseUrl = (options.apiBaseUrl ?? process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000")
+  const baseUrl = (options.apiBaseUrl ?? process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:4000")
     .replace(/\/+$/, "");
   const fetcher = options.fetcher ?? fetch;
   let response: Response;

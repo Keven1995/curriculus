@@ -5,6 +5,8 @@ import type {
   OrderRecord,
   StoredAnalysisSession,
 } from "../persistence/session-repository.js";
+import type { ResumeLayoutTemplate } from "../resume-layout/resume-layout-types.js";
+import { fileURLToPath } from "node:url";
 import {
   DocumentService,
   DocumentServiceError,
@@ -19,6 +21,7 @@ const analysis: AnalysisOutput = {
   suggestions: [
     {
       id: "suggestion-1",
+      category: "job_alignment",
       section: "Experiência",
       originalText: "Criei APIs.",
       suggestedText: "Desenvolvi APIs REST.",
@@ -60,6 +63,20 @@ function makeOrder(status: OrderRecord["status"] = "approved"): OrderRecord {
     checkoutExpiresAt: new Date("2026-01-02T00:00:00.000Z"),
   };
 }
+
+const referenceLayout: ResumeLayoutTemplate = {
+  schemaVersion: "2.0",
+  id: "sidebar-dark-header-color-v1",
+  page: { format: "A4", widthPt: 595.28, heightPt: 841.89, marginPt: 30 },
+  palette: { sidebar: "#354550", main: "#FFFFFF", headerApprox: "#BACD9E", text: "#111111" },
+  columns: { sidebarWidthPt: 170, gapPt: 20, sidebarRepeats: true },
+  header: { heightPt: 140, nameUppercase: true },
+  typography: { namePt: 26, sectionPt: 14, bodyPt: 10.5 },
+  sections: ["summary", "experience", "education", "certifications"],
+  sidebarSections: ["photo", "contact", "skills"],
+  overflow: { wrapText: true, pageBreak: true, keepExperienceHeadingWithFirstBullet: true },
+  detection: { confidence: 0.55, detectedColumns: 2, warnings: [] },
+};
 
 class MemoryRepository implements DocumentRepository {
   ready = true;
@@ -146,6 +163,42 @@ test("generates a private PDF from stored source text and only the approved sugg
   assert.equal(storage.writes.length, 1);
   assert.equal(repository.session, null);
   assert.equal(repository.generated?.storageKey, storage.writes[0]?.key);
+});
+
+test("generates the approved revised text with the same imported two-column visual template", async () => {
+  const repository = new MemoryRepository();
+  repository.session = { ...makeSession(), resumeLayoutTemplate: referenceLayout };
+  const storage = new MemoryStorage();
+  const service = new DocumentService(
+    repository,
+    storage,
+    "a-private-test-secret-with-at-least-32-characters",
+    undefined,
+    () => now,
+  );
+
+  const result = await service.generateDocument(sessionId, ["suggestion-1"]);
+  const pdf = storage.files.get(repository.generated!.storageKey)!;
+  assert.equal(result.created, true);
+  assert.equal(pdf.subarray(0, 5).toString(), "%PDF-");
+
+  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const standardFontDataUrl = fileURLToPath(new URL("../../../../node_modules/pdfjs-dist/standard_fonts/", import.meta.url));
+  const parsed = await pdfjs.getDocument({ data: new Uint8Array(pdf), isEvalSupported: false, standardFontDataUrl }).promise;
+  try {
+    assert.ok(parsed.numPages >= 1);
+    let generatedText = "";
+    for (let pageNumber = 1; pageNumber <= parsed.numPages; pageNumber += 1) {
+      const page = await parsed.getPage(pageNumber);
+      const content = await page.getTextContent();
+      generatedText += content.items.map((item) => "str" in item ? item.str : "").join(" ");
+    }
+    assert.match(generatedText, /DESENVOLVI APIs REST/i);
+    assert.match(generatedText, /Mantive sistemas/);
+    assert.doesNotMatch(generatedText, /Criei APIs/);
+  } finally {
+    await parsed.destroy();
+  }
 });
 
 test("does not generate or retain a document before server-side payment approval", async () => {

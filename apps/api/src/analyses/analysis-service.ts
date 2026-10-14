@@ -94,12 +94,12 @@ export function createAnalysisService(options: AnalysisServiceOptions): Analysis
       try {
         parsedOutput = JSON.parse(generated.outputText);
       } catch {
-        throw new InvalidAnalysisOutputError();
+        throw new InvalidAnalysisOutputError("invalid_json");
       }
 
       const validation = parseAnalysisOutput(parsedOutput, request.resume);
       if (!validation.success) {
-        throw new InvalidAnalysisOutputError();
+        throw new InvalidAnalysisOutputError(validation.issues[0] ?? "invalid_root");
       }
 
       const usage = {

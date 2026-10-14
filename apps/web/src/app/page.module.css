@@ -693,6 +693,79 @@
   font-size: 14px;
 }
 
+.finalResumeSection {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 0 0 58px;
+}
+
+.finalResumeCard {
+  display: grid;
+  gap: 13px;
+  padding: 24px;
+  border: 1px solid #dce9e2;
+  border-radius: 14px;
+  background: #fff;
+}
+
+.finalResumeCard > label {
+  color: #294139;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.finalResumeCard textarea {
+  width: 100%;
+  min-height: 320px;
+  padding: 14px;
+  border: 1px solid #cbd9d0;
+  border-radius: 9px;
+  background: #fcfdfc;
+  color: #263d34;
+  font: 14px/1.65 ui-monospace, "Cascadia Mono", monospace;
+  resize: vertical;
+}
+
+.finalResumeCard textarea:focus-visible {
+  outline: 3px solid #8bb9a5;
+  outline-offset: 2px;
+}
+
+.finalResumeActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.finalResumeApplyButton {
+  min-height: 44px;
+  padding: 10px 16px;
+  border: 1px solid #2c7058;
+  border-radius: 8px;
+  background: #fff;
+  color: #245a46;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.finalResumeApplyButton:hover:not(:disabled) {
+  background: #edf7f1;
+}
+
+.finalResumeApplyButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.finalResumePrivacy {
+  margin: 0;
+  color: #52665d;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 .checkoutCard {
   display: grid;
   gap: 15px;
@@ -993,6 +1066,15 @@
     padding: 17px;
   }
 
+  .finalResumeCard {
+    padding: 17px;
+  }
+
+  .finalResumeActions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
   .decisionSummary {
     flex: auto;
   }
@@ -1085,6 +1167,44 @@
   border-color: #d6e6da;
   border-radius: 999px;
   color: #285b47;
+}
+
+.layoutReferenceNotice,
+.layoutReferenceError {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0;
+  padding: 13px 15px;
+  border: 1px solid #b9d8c8;
+  border-radius: 10px;
+  background: #f1f8f3;
+  color: #315e49;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.layoutReferenceNotice p,
+.layoutReferenceError p {
+  margin: 0;
+}
+
+.layoutReferenceError {
+  border-color: #e6c4b8;
+  background: #fff7f3;
+  color: #844b39;
+}
+
+.layoutReferenceButton {
+  justify-self: start;
+  padding: 7px 10px;
+  border: 1px solid #c4d5ca;
+  border-radius: 8px;
+  background: #fff;
+  color: #315e49;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
 }
 
 .hero {

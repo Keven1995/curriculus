@@ -9,6 +9,7 @@ const analysis: AnalysisOutput = {
   suggestions: [
     {
       id: "experience",
+      category: "job_alignment",
       section: "Experiência",
       originalText: "Desenvolvi APIs em Java.",
       suggestedText: "Desenvolvi e mantive APIs REST em Java.",
@@ -20,6 +21,7 @@ const analysis: AnalysisOutput = {
     },
     {
       id: "skills",
+      category: "job_alignment",
       section: "Competências",
       originalText: "Conheço SQL.",
       suggestedText: "Utilizei SQL.",

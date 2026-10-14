@@ -44,7 +44,7 @@ export function AnalysisPreview({
         <div>
           <p className={styles.step}>02</p>
           <h2 id="preview-title" tabIndex={-1} ref={previewTitleRef}>Revise as sugestões</h2>
-          <p>Compare cada trecho e decida o que representa sua experiência.</p>
+          <p>Revise ajustes para a vaga e correções de escrita; aprove apenas o que fizer sentido.</p>
         </div>
         <p className={styles.decisionSummary} aria-live="polite">
           Aprovadas: {summary.approved} · Rejeitadas: {summary.rejected} · Pendentes: {summary.pending}
@@ -72,7 +72,9 @@ export function AnalysisPreview({
               <article className={styles.suggestionCard} key={suggestion.id}>
                 <div className={styles.suggestionTopline}>
                   <h3>{suggestion.section}</h3>
-                  <span className={styles.previewBadge}>Prévia</span>
+                  <span className={styles.previewBadge}>
+                    {suggestion.category === "proofreading" ? "Revisão ortográfica" : "Aderência à vaga"}
+                  </span>
                 </div>
 
                 <div className={styles.diff} role="group" aria-label={`Comparação para ${suggestion.section}`}>
@@ -81,12 +83,16 @@ export function AnalysisPreview({
                     <del>{suggestion.originalText}</del>
                   </div>
                   <div>
-                    <span className={styles.diffLabel}>Sugestão</span>
+                    <span className={styles.diffLabel}>
+                      {suggestion.category === "proofreading" ? "Correção" : "Sugestão"}
+                    </span>
                     <ins>{suggestion.suggestedText}</ins>
                   </div>
                 </div>
 
-                <p className={styles.rationale}><strong>Por que sugerimos:</strong> {suggestion.rationale}</p>
+                <p className={styles.rationale}>
+                  <strong>{suggestion.category === "proofreading" ? "Por que corrigimos:" : "Por que sugerimos:"}</strong> {suggestion.rationale}
+                </p>
 
                 {suggestion.sourceFacts.length > 0 && (
                   <div className={styles.contextBlock}>
@@ -118,11 +124,15 @@ export function AnalysisPreview({
                   </aside>
                 )}
 
-                <div className={styles.decisionControls} role="group" aria-label={`Decisão para ${suggestion.section}`}>
+                <div
+                  className={styles.decisionControls}
+                  role="group"
+                  aria-label={`${suggestion.category === "proofreading" ? "Correção ortográfica" : "Sugestão"} para ${suggestion.section}`}
+                >
                   <button
                     type="button"
                     aria-pressed={decision === "approved"}
-                    aria-label={`Aprovar sugestão: ${suggestion.section}`}
+                    aria-label={`Aprovar ${suggestion.category === "proofreading" ? "correção ortográfica" : "sugestão"}: ${suggestion.section}`}
                     className={styles.approveButton}
                     onClick={() => onDecision(suggestion.id, "approved")}
                   >
@@ -131,7 +141,7 @@ export function AnalysisPreview({
                   <button
                     type="button"
                     aria-pressed={decision === "rejected"}
-                    aria-label={`Rejeitar sugestão: ${suggestion.section}`}
+                    aria-label={`Rejeitar ${suggestion.category === "proofreading" ? "correção ortográfica" : "sugestão"}: ${suggestion.section}`}
                     className={styles.rejectButton}
                     onClick={() => onDecision(suggestion.id, "rejected")}
                   >
@@ -170,7 +180,7 @@ export function AnalysisPreview({
         Esta é uma prévia. A marca d’água e a desativação de copiar e do menu de contexto são apenas dissuasões e não impedem capturas de tela, OCR ou reprodução.
       </p>
       <p className={styles.paymentNotice}>
-        Suas decisões ficam apenas nesta página. O preview, por si só, não inicia uma cobrança nem gera o documento final.
+        Suas decisões ficam apenas nesta página. A prévia não gera o PDF pago; você pode aplicar as aprovações e baixar uma versão em texto na etapa seguinte, sem cobrança.
       </p>
     </section>
   );

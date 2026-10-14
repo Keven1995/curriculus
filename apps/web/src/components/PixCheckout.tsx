@@ -3,6 +3,7 @@
 import React, { useEffect, useRef, useState, type FormEvent } from "react";
 import {
   createFinalDocument,
+  createLocalTestDocument,
   createPixPayment,
   getPixPaymentStatus,
   PaymentClientError,
@@ -13,13 +14,15 @@ import {
 
 type PixCheckoutProps = {
   sessionId: string;
+  localTestMode?: boolean;
+  usesReferenceLayout?: boolean;
   approvedSuggestionIds: readonly string[];
   styles: Record<string, string>;
   apiBaseUrl?: string;
   fetcher?: typeof fetch;
 };
 
-export function PixCheckout({ sessionId, approvedSuggestionIds, styles, apiBaseUrl, fetcher }: PixCheckoutProps) {
+export function PixCheckout({ sessionId, localTestMode = false, usesReferenceLayout = false, approvedSuggestionIds, styles, apiBaseUrl, fetcher }: PixCheckoutProps) {
   const [payerEmail, setPayerEmail] = useState("");
   const [payment, setPayment] = useState<PixPaymentApiResponse | null>(null);
   const [paymentStatus, setPaymentStatus] = useState<PixPaymentStatus | null>(null);
@@ -99,17 +102,84 @@ export function PixCheckout({ sessionId, approvedSuggestionIds, styles, apiBaseU
     }
   }
 
+  async function generateLocalTestPdf() {
+    if (!localTestMode || isGenerating || document || approvedSuggestionIds.length === 0) return;
+    setMessage("");
+    setIsGenerating(true);
+    try {
+      const result = await createLocalTestDocument(sessionId, approvedSuggestionIds, { apiBaseUrl, fetcher });
+      setDocument(result);
+      setMessage("PDF de teste gerado. Nenhum pagamento real foi feito.");
+    } catch (error) {
+      setMessage(error instanceof PaymentClientError ? error.message : "Não foi possível gerar o PDF de teste.");
+    } finally {
+      setIsGenerating(false);
+    }
+  }
+
   const downloadUrl = document
-    ? `${(apiBaseUrl ?? process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000").replace(/\/+$/, "")}${document.downloadPath}`
+    ? `${(apiBaseUrl ?? process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:4000").replace(/\/+$/, "")}${document.downloadPath}`
     : "";
   const feedbackIsStatus = Boolean(document) ||
     (paymentStatus === "approved" && message.startsWith("Pagamento confirmado")) ||
     (paymentStatus === "pending" && message.startsWith("Ainda não recebemos"));
 
+  if (localTestMode) {
+    return (
+      <section className={styles.checkoutSection} aria-labelledby="checkout-title">
+        <div className={styles.checkoutHeading}>
+          <span className={styles.step} aria-hidden="true">04</span>
+          <div>
+            <h2 id="checkout-title">PDF no ambiente de teste</h2>
+            <p>Gere o documento usando apenas as sugestões que você aprovou.</p>
+          </div>
+        </div>
+        <div className={styles.checkoutCard}>
+          <p className={styles.checkoutDescription}>
+            Sandbox local: a aprovação é simulada. Nenhum Pix real é criado, nenhum e-mail é enviado e nenhum pagamento é cobrado.
+          </p>
+          {usesReferenceLayout && <p className={styles.checkoutPrivacy}>O PDF será gerado no layout extraído do PDF que você enviou no início, usando somente as sugestões aprovadas nesta sessão.</p>}
+          {!document && (
+            <button
+              className={styles.submitButton}
+              type="button"
+              onClick={generateLocalTestPdf}
+              disabled={isGenerating || approvedSuggestionIds.length === 0}
+            >
+              {isGenerating ? "Gerando PDF de teste…" : "Gerar PDF de teste (sem cobrança)"}
+            </button>
+          )}
+          {approvedSuggestionIds.length === 0 && !document && (
+            <p className={styles.help}>Aprove ao menos uma sugestão antes de gerar o PDF de teste.</p>
+          )}
+          {document && (
+            <p>
+              <a className={styles.submitButton} href={downloadUrl} rel="noreferrer">
+                Baixar currículo em PDF
+              </a>
+              <span className={styles.help}>
+                Arquivo temporário deste ambiente de teste; disponível até {new Date(document.expiresAt).toISOString().replace("T", " ").slice(0, 16)} UTC.
+              </span>
+            </p>
+          )}
+          {(message || isGenerating) && (
+            <p
+              className={isGenerating || document ? styles.status : styles.errorStatus}
+              role={isGenerating || document ? "status" : "alert"}
+              aria-live={isGenerating || document ? "polite" : "assertive"}
+            >
+              {isGenerating ? "Montando o PDF no armazenamento temporário local…" : message}
+            </p>
+          )}
+        </div>
+      </section>
+    );
+  }
+
   return (
     <section className={styles.checkoutSection} aria-labelledby="checkout-title">
       <div className={styles.checkoutHeading}>
-        <span className={styles.step} aria-hidden="true">03</span>
+        <span className={styles.step} aria-hidden="true">04</span>
         <div>
           <h2 id="checkout-title">Se quiser, continue com o Pix</h2>
           <p>Confira o total e o que esta cobrança pretende desbloquear.</p>
@@ -121,8 +191,9 @@ export function PixCheckout({ sessionId, approvedSuggestionIds, styles, apiBaseU
           Total <strong>R$ 1,99</strong>
         </p>
         <p className={styles.checkoutDescription}>
-          Após a confirmação do pagamento pelo webhook, você poderá gerar um PDF com o currículo original e somente as sugestões que aprovar. O arquivo ficará disponível por 24 horas.
+          Após a confirmação do pagamento, você poderá gerar um PDF com o currículo original e somente as sugestões que aprovar. O arquivo ficará disponível por 24 horas.
         </p>
+        {usesReferenceLayout && <p className={styles.checkoutPrivacy}>O PDF final usará também o layout visual extraído do PDF de referência que você enviou no início; o conteúdo continuará sendo o currículo desta sessão com apenas as sugestões aprovadas.</p>}
         <p className={styles.checkoutPrivacy}>
           O e-mail é enviado ao Mercado Pago para criar a cobrança e não é gravado no Curriculus.
         </p>

@@ -17,14 +17,14 @@ export default function TermsPage() {
       <h2>Uso e revisão do conteúdo</h2>
       <ul>
         <li>Envie somente dados que tenha autorização para compartilhar. Evite dados sensíveis desnecessários e dados pessoais de terceiros.</li>
-        <li>As sugestões devem se basear no currículo enviado, mas você é responsável por revisar a precisão, confirmar pontos destacados e aprovar cada alteração antes de gerar o documento.</li>
+        <li>As sugestões devem se basear no currículo enviado, mas você é responsável por revisar a precisão, confirmar pontos destacados e aprovar cada alteração. É possível editar e baixar um arquivo de texto no próprio navegador; o PDF é um serviço opcional separado.</li>
         <li>Não use o serviço para tomar decisões de contratação, criar rankings ou avaliar a empregabilidade de outras pessoas.</li>
         <li>Não envie conteúdo ilícito, enganoso ou que viole direitos de terceiros.</li>
       </ul>
 
       <h2>Preço e pagamento</h2>
       <p>
-        O preço previsto para um currículo final é R$ 1,99, pago via Pix quando a cobrança estiver habilitada. O documento só pode ser gerado após confirmação do pagamento pelo servidor. A cobrança pública permanece desativada até a validação operacional, comercial, de segurança e de privacidade.
+        O preço previsto para gerar o PDF é R$ 1,99, pago via Pix quando a cobrança estiver habilitada. O PDF só pode ser gerado após confirmação do pagamento pelo servidor. A edição e o download local em texto não iniciam cobrança. A cobrança pública permanece desativada até a validação operacional, comercial, de segurança e de privacidade.
       </p>
       <p>
         A política de cancelamento e reembolso, inclusive para pagamentos aprovados e solicitações de exclusão, ainda precisa ser definida e revisada antes da operação pública. A exclusão de dados não inicia reembolso automático; registros financeiros podem ser mantidos separadamente pelo prazo legal aplicável.

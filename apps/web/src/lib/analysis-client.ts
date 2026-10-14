@@ -15,6 +15,7 @@ export type JobRequirement = {
 
 export type AnalysisSuggestion = {
   id: string;
+  category: "job_alignment" | "proofreading";
   section: string;
   originalText: string;
   suggestedText: string;
@@ -34,6 +35,8 @@ export type AnalysisOutput = {
 export type AnalysisApiResponse = {
   sessionId: string;
   expiresAt: string;
+  localTestMode?: boolean;
+  usesReferenceLayout?: boolean;
   analysis: AnalysisOutput;
   usage: {
     inputTokens: number;
@@ -59,6 +62,7 @@ export class AnalysisClientError extends Error {
 type RequestOptions = {
   apiBaseUrl?: string;
   fetcher?: typeof fetch;
+  resumeLayoutTemplateId?: string;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -86,6 +90,7 @@ function isSuggestion(value: unknown): value is AnalysisSuggestion {
   if (!isRecord(value) || !isRecord(value.sourceRange)) return false;
   return (
     typeof value.id === "string" &&
+    (value.category === "job_alignment" || value.category === "proofreading") &&
     typeof value.section === "string" &&
     typeof value.originalText === "string" &&
     typeof value.suggestedText === "string" &&
@@ -114,6 +119,8 @@ export function isAnalysisApiResponse(value: unknown): value is AnalysisApiRespo
   return (
     typeof value.sessionId === "string" && value.sessionId.length > 0 &&
     typeof value.expiresAt === "string" && !Number.isNaN(Date.parse(value.expiresAt)) &&
+    (value.localTestMode === undefined || typeof value.localTestMode === "boolean") &&
+    (value.usesReferenceLayout === undefined || typeof value.usesReferenceLayout === "boolean") &&
     isAnalysisOutput(value.analysis) &&
     Number.isInteger(usage.inputTokens) &&
     Number.isInteger(usage.outputTokens) &&
@@ -137,6 +144,8 @@ const errorMessages: Record<string, string> = {
   ANALYSIS_FAILED: "Não foi possível concluir a análise. Tente novamente mais tarde.",
   NETWORK_ERROR: "Não foi possível conectar ao serviço. Verifique sua conexão e tente novamente.",
   INVALID_RESPONSE: "O serviço retornou uma resposta inválida. Tente novamente mais tarde.",
+  LAYOUT_IMPORT_NOT_AVAILABLE: "A preservação do layout só está disponível no ambiente de teste local.",
+  TEMPLATE_EXPIRED: "O layout de referência expirou. Envie o PDF novamente antes de analisar.",
 };
 
 function apiErrorCode(payload: unknown): string | undefined {
@@ -153,7 +162,7 @@ export async function requestAnalysis(
     throw new AnalysisClientError("Revise os campos indicados antes de continuar.", "INVALID_FORM");
   }
 
-  const baseUrl = (options.apiBaseUrl ?? process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000")
+  const baseUrl = (options.apiBaseUrl ?? process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:4000")
     .replace(/\/+$/, "");
   const fetcher = options.fetcher ?? fetch;
   let response: Response;
@@ -163,10 +172,10 @@ export async function requestAnalysis(
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        ...(input.jobUrl.trim() ? { jobUrl: input.jobUrl.trim() } : {}),
         ...(input.jobDescription.trim() ? { jobDescription: input.jobDescription.trim() } : {}),
-        resume: input.resume.trim(),
-        dataNoticeAcknowledged: input.acknowledged,
+          resume: input.resume.trim(),
+          dataNoticeAcknowledged: input.acknowledged,
+          ...(options.resumeLayoutTemplateId ? { resumeLayoutTemplateId: options.resumeLayoutTemplateId } : {}),
       }),
     });
   } catch {
@@ -233,4 +242,33 @@ export function approvedSuggestionIds(
       (order.get(right.id) ?? Number.MAX_SAFE_INTEGER),
     )
     .map(({ id }) => id);
+}
+
+/** Applies only approved, exact-source, non-overlapping suggestions. */
+export function buildResumeWithApprovedSuggestions(
+  resume: string,
+  analysis: AnalysisOutput,
+  decisions: SuggestionDecisions,
+): string {
+  const approved = analysis.suggestions
+    .filter((suggestion) => decisions[suggestion.id] === "approved")
+    .sort((left, right) => left.sourceRange.start - right.sourceRange.start);
+
+  let result = "";
+  let cursor = 0;
+  for (const suggestion of approved) {
+    const { start, end } = suggestion.sourceRange;
+    if (
+      !Number.isInteger(start) ||
+      !Number.isInteger(end) ||
+      start < cursor ||
+      end <= start ||
+      end > resume.length ||
+      resume.slice(start, end) !== suggestion.originalText
+    ) continue;
+
+    result += resume.slice(cursor, start) + suggestion.suggestedText;
+    cursor = end;
+  }
+  return result + resume.slice(cursor);
 }

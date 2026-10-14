@@ -1,6 +1,7 @@
 import type { AnalysisOutput } from "../analyses/analysis-output.js";
 import type { AnalysisRequest } from "../analyses/analysis-request.js";
 import type { AnalysisUsage } from "../analyses/analysis-service.js";
+import type { ResumeLayoutTemplate } from "../resume-layout/resume-layout-types.js";
 
 export type QueryResult<Row extends Record<string, unknown>> = {
   rows: Row[];
@@ -21,6 +22,7 @@ export type CreateAnalysisSession = {
   resume: string;
   analysis: AnalysisOutput;
   usage: AnalysisUsage;
+  resumeLayoutTemplate?: ResumeLayoutTemplate;
 };
 
 export type SessionReference = {
@@ -155,7 +157,7 @@ export class PostgresSessionRepository implements SessionRepository {
   async isReady(): Promise<boolean> {
     try {
       await this.database.query<SessionRow>(
-        "SELECT id FROM analysis_sessions LIMIT 0",
+        "SELECT id, resume_layout_template FROM analysis_sessions LIMIT 0",
       );
       await this.database.query<SessionRow>(
         "SELECT id, pix_qr_code, pix_qr_code_base64 FROM orders LIMIT 0",
@@ -176,8 +178,9 @@ export class PostgresSessionRepository implements SessionRepository {
          input_tokens,
          output_tokens,
          estimated_cost_usd,
+         resume_layout_template,
          expires_at
-       ) VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, NOW() + INTERVAL '24 hours')
+       ) VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8::jsonb, NOW() + INTERVAL '24 hours')
        RETURNING id, created_at, expires_at`,
       [
         input.jobUrl ?? null,
@@ -187,6 +190,7 @@ export class PostgresSessionRepository implements SessionRepository {
         input.usage.inputTokens,
         input.usage.outputTokens,
         input.usage.estimatedCostUsd,
+        input.resumeLayoutTemplate ? JSON.stringify(input.resumeLayoutTemplate) : null,
       ],
     );
     const row = result.rows[0];
@@ -201,7 +205,7 @@ export class PostgresSessionRepository implements SessionRepository {
 
   async findActiveSession(id: string): Promise<StoredAnalysisSession | null> {
     const result = await this.database.query<SessionRow>(
-      `SELECT id, status, job_url, job_description, resume, analysis_result,
+      `SELECT id, status, job_url, job_description, resume, analysis_result, resume_layout_template,
               input_tokens, output_tokens, estimated_cost_usd, created_at, expires_at
          FROM analysis_sessions
         WHERE id = $1 AND status = 'analysis_ready' AND expires_at > NOW()`,
@@ -217,6 +221,9 @@ export class PostgresSessionRepository implements SessionRepository {
       jobDescription: String(row.job_description),
       resume: String(row.resume),
       analysis: asJson<AnalysisOutput>(row.analysis_result),
+      ...(row.resume_layout_template
+        ? { resumeLayoutTemplate: asJson<ResumeLayoutTemplate>(row.resume_layout_template) }
+        : {}),
       usage: {
         inputTokens: asNumber(row.input_tokens),
         outputTokens: asNumber(row.output_tokens),
@@ -315,6 +322,7 @@ export class PostgresSessionRepository implements SessionRepository {
               job_description = NULL,
               resume = NULL,
               analysis_result = NULL,
+              resume_layout_template = NULL,
               document_storage_key = $2,
               document_created_at = NOW(),
               expires_at = NOW() + INTERVAL '24 hours'

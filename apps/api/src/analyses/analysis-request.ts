@@ -9,6 +9,7 @@ export type AnalysisRequest = {
   jobUrl?: string;
   jobDescription?: string;
   resume: string;
+  resumeLayoutTemplateId?: string;
   dataNoticeAcknowledged: true;
 };
 
@@ -25,6 +26,7 @@ const allowedFields = new Set([
   "jobUrl",
   "jobDescription",
   "resume",
+  "resumeLayoutTemplateId",
   "dataNoticeAcknowledged",
 ]);
 
@@ -107,6 +109,19 @@ export function validateAnalysisRequest(input: unknown): AnalysisRequestValidati
     if (!resume) issues.push({ field: "resume", code: "required" });
   }
 
+  let resumeLayoutTemplateId: string | undefined;
+  if (input.resumeLayoutTemplateId !== undefined) {
+    if (
+      typeof input.resumeLayoutTemplateId !== "string" ||
+      input.resumeLayoutTemplateId.length > 64 ||
+      !input.resumeLayoutTemplateId.trim()
+    ) {
+      issues.push({ field: "request", code: "invalid_type" });
+    } else {
+      resumeLayoutTemplateId = input.resumeLayoutTemplateId.trim();
+    }
+  }
+
   if (jobUrl && !isValidJobUrl(jobUrl)) {
     issues.push({ field: "jobUrl", code: "invalid_url" });
   }
@@ -131,6 +146,7 @@ export function validateAnalysisRequest(input: unknown): AnalysisRequestValidati
       ...(jobUrl ? { jobUrl } : {}),
       ...(jobDescription ? { jobDescription } : {}),
       resume,
+      ...(resumeLayoutTemplateId ? { resumeLayoutTemplateId } : {}),
       dataNoticeAcknowledged: true,
     },
   };

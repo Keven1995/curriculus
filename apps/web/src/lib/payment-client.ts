@@ -39,6 +39,7 @@ const paymentErrorMessages: Record<string, string> = {
   PAYMENT_FAILED: "Não foi possível gerar o Pix. Tente novamente mais tarde.",
   NETWORK_ERROR: "Não foi possível conectar ao serviço. Verifique sua conexão e tente novamente.",
   INVALID_RESPONSE: "O serviço retornou uma resposta inválida. Tente novamente mais tarde.",
+  LOCAL_TEST_DOCUMENT_FAILED: "Não foi possível gerar o PDF de teste local. Tente novamente.",
   PAYMENT_NOT_FOUND: "Não foi possível localizar a cobrança desta análise.",
   PAYMENT_NOT_APPROVED: "A cobrança ainda não foi aprovada.",
   PERSISTENCE_NOT_CONFIGURED: "O armazenamento ainda não está configurado neste ambiente.",
@@ -49,6 +50,7 @@ const paymentErrorMessages: Record<string, string> = {
   DOCUMENT_STORAGE_UNAVAILABLE: "O documento não pôde ser armazenado. Tente novamente mais tarde.",
   DOCUMENT_RENDER_FAILED: "Não foi possível montar o PDF. Tente novamente mais tarde.",
   DOCUMENT_GENERATION_FAILED: "Não foi possível gerar o currículo. Tente novamente mais tarde.",
+  LAYOUT_IMPORT_NOT_AVAILABLE: "O layout de referência não está disponível nesta sessão. Gere uma nova análise local.",
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -74,7 +76,7 @@ function apiErrorCode(value: unknown): string | undefined {
 }
 
 function baseApiUrl(options: PaymentRequestOptions): string {
-  return (options.apiBaseUrl ?? process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000")
+  return (options.apiBaseUrl ?? process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:4000")
     .replace(/\/+$/, "");
 }
 
@@ -164,9 +166,10 @@ export async function getPixPaymentStatus(
   return payload.status as PixPaymentStatus;
 }
 
-export async function createFinalDocument(
+async function requestFinalDocument(
   sessionId: string,
   approvedSuggestionIds: readonly string[],
+  path: string,
   options: PaymentRequestOptions = {},
 ): Promise<FinalDocumentApiResponse> {
   if (
@@ -182,7 +185,7 @@ export async function createFinalDocument(
   let response: Response;
   try {
     response = await fetcher(
-      `${baseApiUrl(options)}/sessions/${encodeURIComponent(sessionId)}/documents`,
+      `${baseApiUrl(options)}${path}`,
       {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -209,4 +212,30 @@ export async function createFinalDocument(
     throw new PaymentClientError(paymentErrorMessages.INVALID_RESPONSE, "INVALID_RESPONSE");
   }
   return payload as FinalDocumentApiResponse;
+}
+
+export function createFinalDocument(
+  sessionId: string,
+  approvedSuggestionIds: readonly string[],
+  options: PaymentRequestOptions = {},
+): Promise<FinalDocumentApiResponse> {
+  return requestFinalDocument(
+    sessionId,
+    approvedSuggestionIds,
+    `/sessions/${encodeURIComponent(sessionId)}/documents`,
+    options,
+  );
+}
+
+export function createLocalTestDocument(
+  sessionId: string,
+  approvedSuggestionIds: readonly string[],
+  options: PaymentRequestOptions = {},
+): Promise<FinalDocumentApiResponse> {
+  return requestFinalDocument(
+    sessionId,
+    approvedSuggestionIds,
+    `/__local-test/sessions/${encodeURIComponent(sessionId)}/documents`,
+    options,
+  );
 }

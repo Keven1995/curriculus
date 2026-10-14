@@ -3,11 +3,13 @@ import { createHmac } from "node:crypto";
 import { Writable } from "node:stream";
 import test from "node:test";
 import { createApp } from "./app.js";
-import { AnalysisProviderError } from "./analyses/analysis-errors.js";
+import { AnalysisProviderError, InvalidAnalysisOutputError } from "./analyses/analysis-errors.js";
 import { PixPaymentError } from "./payments/payment-errors.js";
 import { PaymentWebhookError } from "./payments/payment-webhook-service.js";
 import { DocumentServiceError } from "./documents/document-service.js";
 import { DataDeletionServiceError } from "./privacy/data-deletion-service.js";
+import type { CreateAnalysisSession } from "./persistence/session-repository.js";
+import type { ResumeLayoutTemplate } from "./resume-layout/resume-layout-types.js";
 
 const validRequest = {
   jobDescription: "Vaga de pessoa desenvolvedora",
@@ -72,10 +74,203 @@ test("applies a tighter limit to expensive analysis requests", async (context) =
   assert.equal(second.json().error.code, "RATE_LIMITED");
 });
 
+test("applies an independent daily per-IP analysis limit", async (context) => {
+  let calls = 0;
+  const app = createApp({
+    rateLimitPolicies: { analysisDaily: { limit: 1, windowMs: 24 * 60 * 60_000 } },
+    analysisService: {
+      async analyze() {
+        calls += 1;
+        return {
+          analysis: {
+            jobRequirements: [],
+            suggestions: [],
+            documentStructure: { sectionOrder: [], suggestionOrder: [] },
+          },
+          usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, estimatedCostUsd: null },
+        };
+      },
+    },
+    sessionRepository: {
+      async isReady() { return true; },
+      async createSession() {
+        return {
+          id: "daily-limit-session",
+          createdAt: new Date(),
+          expiresAt: new Date(Date.now() + 60_000),
+        };
+      },
+    } as never,
+  });
+  context.after(() => app.close());
+
+  const first = await app.inject({ method: "POST", url: "/analyses", payload: validRequest });
+  const second = await app.inject({ method: "POST", url: "/analyses", payload: validRequest });
+  assert.equal(first.statusCode, 201);
+  assert.equal(second.statusCode, 429);
+  assert.equal(second.json().error.code, "RATE_LIMITED");
+  assert.equal(calls, 1);
+});
+
+test("marks the full local test flow in analysis responses", async (context) => {
+  const app = createApp({
+    localTestMode: true,
+    analysisService: {
+      async analyze() {
+        return {
+          analysis: {
+            jobRequirements: [],
+            suggestions: [],
+            documentStructure: { sectionOrder: [], suggestionOrder: [] },
+          },
+          usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, estimatedCostUsd: null },
+        };
+      },
+    },
+    sessionRepository: {
+      async isReady() { return true; },
+      async createSession() {
+        return {
+          id: "local-test-session",
+          createdAt: new Date(),
+          expiresAt: new Date(Date.now() + 60_000),
+        };
+      },
+    } as never,
+  });
+  context.after(() => app.close());
+
+  const response = await app.inject({ method: "POST", url: "/analyses", payload: validRequest });
+
+  assert.equal(response.statusCode, 201);
+  assert.equal(response.json().localTestMode, true);
+});
+
+test("exposes local layout import and accepts the original PDF as raw bytes", async (context) => {
+  let importedBytes: Buffer | undefined;
+  let importedName = "";
+  const importPayload = Buffer.concat([Buffer.from("%PDF-"), Buffer.alloc(300_000, 1)]);
+  const app = createApp({
+    localTestMode: true,
+    resumeLayoutService: {
+      async importPdf(bytes, fileName) {
+        importedBytes = bytes;
+        importedName = fileName;
+        return {
+          templateId: "4e4f8a8c-7c1f-4fa7-a5a5-83eb983437ea",
+          template: { id: "sidebar-dark-header-color-v1" },
+          rawExtraction: { pages: [] },
+          detectedSections: [],
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        } as never;
+      },
+      getTemplate() { return undefined; },
+      discardTextExtraction() {},
+      deleteTemplate() { return true; },
+      clear() {},
+    },
+  });
+  context.after(() => app.close());
+
+  const capabilities = await app.inject({ method: "GET", url: "/features" });
+  const imported = await app.inject({
+    method: "POST",
+    url: "/resume-layouts/import",
+    headers: {
+      "content-type": "application/pdf",
+      "x-file-name": encodeURIComponent("referência.pdf"),
+    },
+    payload: importPayload,
+  });
+  assert.deepEqual(capabilities.json(), { resumeLayoutImport: true });
+  assert.equal(imported.statusCode, 201);
+  assert.ok(Buffer.isBuffer(importedBytes));
+  assert.equal(importedBytes?.length, importPayload.length);
+  assert.equal(importedName, "referência.pdf");
+  assert.equal("rawExtraction" in imported.json(), false);
+});
+
+test("attaches only the server-extracted layout template to the analysis session", async (context) => {
+  const templateId = "4e4f8a8c-7c1f-4fa7-a5a5-83eb983437ea";
+  const template: ResumeLayoutTemplate = {
+    schemaVersion: "2.0",
+    id: "sidebar-dark-header-color-v1",
+    page: { format: "A4", widthPt: 595.28, heightPt: 841.89, marginPt: 30 },
+    palette: { sidebar: "#354550", main: "#FFFFFF", headerApprox: "#BACD9E", text: "#111111" },
+    columns: { sidebarWidthPt: 170, gapPt: 20, sidebarRepeats: true },
+    header: { heightPt: 140, nameUppercase: true },
+    typography: { namePt: 26, sectionPt: 14, bodyPt: 10.5 },
+    sections: ["summary", "experience", "education", "certifications"],
+    sidebarSections: ["photo", "contact", "skills"],
+    overflow: { wrapText: true, pageBreak: true, keepExperienceHeadingWithFirstBullet: true },
+    detection: { confidence: 0.55, detectedColumns: 2, warnings: [] },
+  };
+  let storedInput: CreateAnalysisSession | undefined;
+  let modelInput: Record<string, unknown> | undefined;
+  const app = createApp({
+    localTestMode: true,
+    analysisService: {
+      async analyze(input) {
+        modelInput = input as unknown as Record<string, unknown>;
+        return {
+          analysis: { jobRequirements: [], suggestions: [], documentStructure: { sectionOrder: [], suggestionOrder: [] } },
+          usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2, estimatedCostUsd: null },
+        };
+      },
+    },
+    sessionRepository: {
+      async isReady() { return true; },
+      async createSession(input) {
+        storedInput = input;
+        return { id: "session-with-layout", createdAt: new Date(), expiresAt: new Date(Date.now() + 60_000) };
+      },
+    } as never,
+    resumeLayoutService: {
+      async importPdf() { throw new Error("not used in this test"); },
+      getTemplate(id) { return id === templateId ? template : undefined; },
+      discardTextExtraction() {},
+      deleteTemplate() { return true; },
+      clear() {},
+    },
+  });
+  context.after(() => app.close());
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/analyses",
+    payload: { ...validRequest, resumeLayoutTemplateId: templateId },
+  });
+
+  assert.equal(response.statusCode, 201);
+  assert.equal(response.json().usesReferenceLayout, true);
+  assert.deepEqual(storedInput?.resumeLayoutTemplate, template);
+  assert.equal("resumeLayoutTemplateId" in (modelInput ?? {}), false);
+});
+
 test("requires an explicit secure CORS origin in production and adds safe response headers", async (context) => {
   assert.throws(
     () => createApp({ analysisService: null, sessionRepository: null, production: true }),
     /WEB_ORIGIN/,
+  );
+  assert.throws(
+    () => createApp({
+      analysisService: null,
+      sessionRepository: null,
+      production: true,
+      webOrigin: "https://curriculus.example",
+      localTestMode: true,
+    }),
+    /Local test mode must never be enabled in production/,
+  );
+  assert.throws(
+    () => createApp({
+      analysisService: null,
+      sessionRepository: null,
+      production: true,
+      webOrigin: "https://curriculus.example",
+      resumeLayoutService: { importPdf: async () => ({} as never), getTemplate: () => undefined, discardTextExtraction: () => {}, deleteTemplate: () => true, clear: () => {} },
+    }),
+    /Local resume layout import must never be enabled in production/,
   );
   const app = createApp({
     analysisService: null,
@@ -702,6 +897,62 @@ test("logs safe provider diagnostics while keeping secrets and submitted text ou
   assert.equal(logs.includes("PRIVATE_JOB_DESCRIPTION"), false);
   assert.equal(logs.includes("PRIVATE_RESUME_CONTENT"), false);
   assert.equal(response.body.includes("authentication_failed"), false);
+});
+
+test("returns a friendly temporary-unavailability response for Gemini quota exhaustion", async (context) => {
+  const app = createApp({
+    analysisService: {
+      async analyze() {
+        throw new AnalysisProviderError({ provider: "gemini", reason: "quota_exhausted", httpStatus: 429 });
+      },
+    },
+    sessionRepository: { async isReady() { return true; } } as never,
+  });
+  context.after(() => app.close());
+
+  const response = await app.inject({ method: "POST", url: "/analyses", payload: validRequest });
+  assert.equal(response.statusCode, 503);
+  assert.deepEqual(response.json().error, {
+    code: "ANALYSIS_PROVIDER_ERROR",
+    message: "Análises temporariamente indisponíveis. Tente novamente mais tarde.",
+  });
+});
+
+test("logs only a safe validation failure code when model output is rejected", async (context) => {
+  const logLines: string[] = [];
+  const logStream = new Writable({
+    write(chunk, _encoding, callback) {
+      logLines.push(String(chunk));
+      callback();
+    },
+  });
+  const app = createApp({
+    logger: { level: "warn", stream: logStream },
+    analysisService: {
+      async analyze() {
+        throw new InvalidAnalysisOutputError("invalid_collections");
+      },
+    },
+    sessionRepository: { async isReady() { return true; } } as never,
+  });
+  context.after(() => app.close());
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/analyses",
+    payload: {
+      jobDescription: "PRIVATE_JOB_DESCRIPTION",
+      resume: "PRIVATE_RESUME_CONTENT",
+      dataNoticeAcknowledged: true,
+    },
+  });
+  const logs = logLines.join("");
+
+  assert.equal(response.statusCode, 502);
+  assert.match(logs, /"validationFailure":"invalid_collections"/);
+  assert.equal(logs.includes("PRIVATE_JOB_DESCRIPTION"), false);
+  assert.equal(logs.includes("PRIVATE_RESUME_CONTENT"), false);
+  assert.equal(response.body.includes("invalid_collections"), false);
 });
 
 test("runs the injected analysis service exactly once", async (context) => {

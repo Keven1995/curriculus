@@ -16,8 +16,10 @@ export default function PrivacyPage() {
 
       <h2>Quais dados e para quais finalidades?</h2>
       <ul>
-        <li>Texto do currículo e descrição da vaga (e o link fornecido como referência) para comparar requisitos e criar sugestões solicitadas pela própria pessoa usuária.</li>
-        <li>Análise estruturada e decisões de aprovação para mostrar a prévia e, após pagamento confirmado, montar o PDF final solicitado.</li>
+        <li>Texto do currículo e descrição da vaga colada pela pessoa usuária para comparar requisitos e criar sugestões solicitadas.</li>
+        <li>No modo de teste local, o PDF de referência é enviado à API local para extrair coordenadas, cores e evidências visuais. A extração técnica pode conter dados pessoais e fica em memória por até 30 minutos; o arquivo original não é gravado em disco. Somente o template visual é associado à sessão de análise.</li>
+        <li>O PDF final é montado pelo fluxo existente, com o texto do currículo da sessão e apenas as sugestões aprovadas, usando o template visual associado. Texto e fotos do PDF de referência não são copiados para um usuário diferente; fotos incorporadas não são reutilizadas.</li>
+        <li>Análise estruturada para mostrar a prévia e, após pagamento confirmado, montar o PDF solicitado. As decisões de aprovação ficam no navegador; o currículo em texto baixado é montado localmente e não é enviado de volta ao Curriculus.</li>
         <li>E-mail informado no checkout, transmitido ao Mercado Pago para solicitar a cobrança e não persistido pelo Curriculus.</li>
         <li>Identificador do pedido, identificador do pagamento, valor, moeda e estado financeiro para processar e reconciliar a cobrança. O prazo de retenção desses registros está pendente de validação jurídica.</li>
       </ul>
@@ -32,13 +34,14 @@ export default function PrivacyPage() {
 
       <h2>Fornecedores e transferências</h2>
       <p>
-        A arquitetura prevista utiliza OpenAI para processamento da análise, Neon para banco de dados, Render para a API, Vercel para a aplicação web e Mercado Pago para pagamentos. A participação efetiva de cada fornecedor, seus subprocessadores, contratos, regiões de processamento e eventual transferência internacional precisam ser confirmados para o ambiente de produção. O mecanismo legal de transferência, quando necessário, também está pendente de avaliação.
+        A arquitetura prevista utiliza o provedor de IA configurado no ambiente para processar a análise, Neon para banco de dados, Render para a API, Vercel para a aplicação web e Mercado Pago para pagamentos. A participação efetiva de cada fornecedor, seus subprocessadores, contratos, regiões de processamento e eventual transferência internacional precisam ser confirmados para o ambiente de produção. O mecanismo legal de transferência, quando necessário, também está pendente de avaliação.
       </p>
 
       <h2>Retenção e exclusão</h2>
       <ul>
         <li>Sem pagamento: currículo, vaga e análise expiram 24 horas após a criação da sessão.</li>
         <li>Após gerar o documento pago: currículo, vaga e análise são removidos do banco; o PDF fica disponível em armazenamento privado por até 24 horas.</li>
+        <li>No importador de layout local: texto e coordenadas extraídos expiram em memória em até 30 minutos e podem ser excluídos pelo botão “Excluir importação”; o PDF final é gerado em memória e devolvido sem persistência no servidor.</li>
         <li>A pessoa pode solicitar a exclusão antecipada pelo controle “Excluir os dados desta sessão”. Se houver Pix pendente, o serviço tenta cancelá-lo antes; se não conseguir confirmar o cancelamento, não apaga a sessão e solicita uma nova tentativa.</li>
         <li>Pedidos e metadados financeiros ficam separados do conteúdo curricular e podem ser mantidos pelo prazo legal aplicável. O prazo exato, cópias de segurança e ciclo de retenção dos fornecedores ainda precisam ser documentados.</li>
       </ul>

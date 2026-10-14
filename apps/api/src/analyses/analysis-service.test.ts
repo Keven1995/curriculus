@@ -3,6 +3,7 @@ import test from "node:test";
 import { createAnalysisService } from "./analysis-service.js";
 import {
   AnalysisInputTokenLimitError,
+  InvalidAnalysisOutputError,
   AnalysisUsageLimitError,
   JobDescriptionRequiredError,
 } from "./analysis-errors.js";
@@ -20,6 +21,7 @@ const analysisOutput = {
   suggestions: [
     {
       id: "suggestion-1",
+      category: "job_alignment",
       section: "Experiência",
       originalText: "Trabalhei com Java para construir APIs REST.",
       suggestedText: "Desenvolvi APIs REST com Java.",
@@ -131,8 +133,26 @@ test("does not retry when the model returns malformed or unsupported output", as
     maxOutputTokens: 4_000,
   });
 
-  await assert.rejects(service.analyze(input));
+  await assert.rejects(
+    service.analyze(input),
+    (error: unknown) => error instanceof InvalidAnalysisOutputError && error.validationFailure === "invalid_json",
+  );
   assert.equal(fake.calls.length, 1);
+});
+
+test("returns only a bounded validation code when JSON does not satisfy the output contract", async () => {
+  const fake = createFakeProvider(JSON.stringify({ unexpected: "PRIVATE_MODEL_TEXT" }));
+  const service = createAnalysisService({
+    provider: fake.provider,
+    tokenCounter: { count: () => 50 },
+    maxInputTokens: 30_000,
+    maxOutputTokens: 4_000,
+  });
+
+  await assert.rejects(
+    service.analyze(input),
+    (error: unknown) => error instanceof InvalidAnalysisOutputError && error.validationFailure === "invalid_root",
+  );
 });
 
 test("estimates cost only when configured, using provider-reported token usage", async () => {

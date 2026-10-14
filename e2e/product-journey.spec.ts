@@ -1,7 +1,7 @@
 import { expect, test, type Page, type APIRequestContext } from "@playwright/test";
 
-const jobDescription = "Vaga para pessoa desenvolvedora com experiência em Java.";
-const resume = "Trabalhei com Java para construir APIs REST.";
+const jobDescription = "Vaga para pessoa desenvolvedora com experiência em Java, construção de APIs REST e liderança de equipes.";
+const resume = "Trabalhei com Java para construir APIs REST. Tenho experiencia com documentacao\ntecnica.";
 
 async function createAnalysis(page: Page, request: APIRequestContext): Promise<string> {
   await page.goto("/");
@@ -25,6 +25,7 @@ async function createAnalysis(page: Page, request: APIRequestContext): Promise<s
   const result = await response.json() as { sessionId: string };
   await expect(page.getByRole("heading", { name: "Revise as sugestões" })).toBeVisible();
   await expect(page.getByText("Desenvolvi APIs REST com Java.")).toBeVisible();
+  await expect(page.getByText("experiência com documentação técnica")).toBeVisible();
   return result.sessionId;
 }
 
@@ -55,7 +56,8 @@ test("completes analysis, review, sandbox Pix webhook, private PDF download and 
   const sessionId = await createAnalysis(page, request);
 
   await page.getByRole("button", { name: "Aprovar sugestão: Experiência" }).click();
-  await expect(page.getByText("Aprovadas: 1 · Rejeitadas: 0 · Pendentes: 0")).toBeVisible();
+  await page.getByRole("button", { name: "Aprovar correção ortográfica: Ortografia e pontuação" }).click();
+  await expect(page.getByText("Aprovadas: 2 · Rejeitadas: 0 · Pendentes: 0")).toBeVisible();
   await page.getByLabel("E-mail para o pagamento Pix").fill("e2e@example.test");
   await page.getByRole("button", { name: "Gerar código Pix de R$ 1,99" }).click();
   await expect(page.getByRole("heading", { name: "Pix gerado" })).toBeVisible();

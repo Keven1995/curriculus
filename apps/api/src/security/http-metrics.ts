@@ -7,6 +7,9 @@ const ROUTES = new Set([
   "/sessions/:sessionId/payments/status",
   "/sessions/:sessionId/documents",
   "/documents/:sessionId",
+  "/features",
+  "/resume-layouts/import",
+  "/resume-layouts/:templateId",
   "/webhooks/mercadopago",
 ]);
 const METHODS = new Set(["GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"]);

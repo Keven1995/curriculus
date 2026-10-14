@@ -30,6 +30,7 @@ export default function HomePage() {
         />
       </div>
 
+
       <footer className={styles.footer}>
         <span>Curriculus — uma ferramenta de apoio, não uma promessa de contratação.</span>
         <nav aria-label="Informações legais">

@@ -8,18 +8,15 @@ if (process.env.NODE_ENV === "production") {
   throw new Error("The local AI server must never run with NODE_ENV=production.");
 }
 
+if (!process.env.NODE_ENV) process.env.NODE_ENV = "development";
 loadEnvironmentFiles();
 if (process.env.NODE_ENV === "production") {
   throw new Error("The local AI server must never run with NODE_ENV=production.");
 }
 
-if (process.env.OPENAI_ANALYSIS_ENABLED !== "true") {
-  throw new Error("Set OPENAI_ANALYSIS_ENABLED=true in the local .env to opt in to real OpenAI analysis.");
-}
-
 const analysisService = createConfiguredAnalysisService();
 if (!analysisService) {
-  throw new Error("Configure OPENAI_API_KEY, OPENAI_MODEL and OPENAI_TOKENIZER_ENCODING in the server-side .env.");
+  throw new Error("Configure AI_ANALYSIS_ENABLED and one valid AI_PROVIDER in the server-side .env; never put provider keys in NEXT_PUBLIC_* variables.");
 }
 
 // The local process trusts no forwarded headers and never uses the configured database or payment credentials.

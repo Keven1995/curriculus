@@ -20,9 +20,14 @@ test("keeps metric labels bounded to route templates and standard methods/status
 test("records known routes using only their registered templates", () => {
   const metrics = new HttpMetrics();
   metrics.record("DELETE", "/sessions/:sessionId/data", 429);
+  metrics.record("DELETE", "/resume-layouts/:templateId", 204);
 
   assert.match(
     metrics.renderPrometheus(),
     /method="DELETE",route="\/sessions\/:sessionId\/data",status_class="4xx"\} 1/,
+  );
+  assert.match(
+    metrics.renderPrometheus(),
+    /method="DELETE",route="\/resume-layouts\/:templateId",status_class="2xx"\} 1/,
   );
 });

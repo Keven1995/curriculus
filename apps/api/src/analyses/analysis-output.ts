@@ -11,8 +11,11 @@ export type JobRequirement = {
   pointsToConfirm: string[];
 };
 
+export type SuggestionCategory = "job_alignment" | "proofreading";
+
 export type AnalysisSuggestion = {
   id: string;
+  category: SuggestionCategory;
   section: string;
   originalText: string;
   suggestedText: string;
@@ -34,7 +37,11 @@ export type AnalysisOutput = {
 
 export type AnalysisOutputValidation =
   | { success: true; data: AnalysisOutput }
-  | { success: false; issues: string[] };
+  | { success: false; issues: AnalysisOutputIssueCode[] };
+
+export type AnalysisOutputIssueCode =
+  | "invalid_root"
+  | "invalid_collections";
 
 export const ANALYSIS_OUTPUT_SCHEMA = {
   type: "object",
@@ -66,6 +73,7 @@ export const ANALYSIS_OUTPUT_SCHEMA = {
         additionalProperties: false,
         required: [
           "id",
+          "category",
           "section",
           "originalText",
           "suggestedText",
@@ -76,6 +84,7 @@ export const ANALYSIS_OUTPUT_SCHEMA = {
         ],
         properties: {
           id: { type: "string" },
+          category: { type: "string", enum: ["job_alignment", "proofreading"] },
           section: { type: "string" },
           originalText: { type: "string" },
           suggestedText: { type: "string" },
@@ -117,11 +126,98 @@ function stringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every(nonEmptyString);
 }
 
-function exactExcerpts(values: string[], source: string): boolean {
-  return values.every((value) => source.includes(value));
+type SourceRange = { start: number; end: number };
+type NormalizedText = { symbols: string[]; ranges: SourceRange[] };
+
+/** Normalize PDF typography while keeping offsets into the original source. */
+function normalizeWithSourceRanges(value: string): NormalizedText {
+  const symbols: string[] = [];
+  const ranges: SourceRange[] = [];
+
+  for (const match of value.matchAll(/\P{M}\p{M}*|\p{M}+/gu)) {
+    const token = match[0];
+    const start = match.index ?? 0;
+    const end = start + token.length;
+    const normalizedToken = token.normalize("NFKC").toLowerCase();
+
+    for (const symbol of Array.from(normalizedToken)) {
+      if (/^\s+$/u.test(symbol)) {
+        if (symbols.at(-1) === " ") {
+          ranges[ranges.length - 1]!.end = end;
+        } else {
+          symbols.push(" ");
+          ranges.push({ start, end });
+        }
+      } else {
+        symbols.push(symbol);
+        ranges.push({ start, end });
+      }
+    }
+  }
+
+  if (symbols[0] === " ") {
+    symbols.shift();
+    ranges.shift();
+  }
+  if (symbols.at(-1) === " ") {
+    symbols.pop();
+    ranges.pop();
+  }
+  return { symbols, ranges };
 }
 
-function failure(issue: string): AnalysisOutputValidation {
+function findSourceMatches(source: NormalizedText, candidate: string): SourceRange[] {
+  const candidateSymbols = normalizeWithSourceRanges(candidate).symbols;
+  if (candidateSymbols.length === 0 || candidateSymbols.length > source.symbols.length) return [];
+
+  const prefix = new Array<number>(candidateSymbols.length).fill(0);
+  for (let index = 1, matched = 0; index < candidateSymbols.length;) {
+    if (candidateSymbols[index] === candidateSymbols[matched]) {
+      prefix[index] = ++matched;
+      index += 1;
+    } else if (matched > 0) {
+      matched = prefix[matched - 1]!;
+    } else {
+      index += 1;
+    }
+  }
+
+  const matches: SourceRange[] = [];
+  for (let index = 0, matched = 0; index < source.symbols.length;) {
+    if (source.symbols[index] === candidateSymbols[matched]) {
+      index += 1;
+      matched += 1;
+    }
+    if (matched === candidateSymbols.length) {
+      const start = index - matched;
+      matches.push({
+        start: source.ranges[start]!.start,
+        end: source.ranges[start + candidateSymbols.length - 1]!.end,
+      });
+      matched = prefix[matched - 1]!;
+    } else if (index < source.symbols.length && source.symbols[index] !== candidateSymbols[matched]) {
+      if (matched > 0) matched = prefix[matched - 1]!;
+      else index += 1;
+    }
+  }
+  return matches;
+}
+
+function canonicalExcerpts(values: string[], source: NormalizedText, originalSource: string): string[] | null {
+  const excerpts: string[] = [];
+  for (const value of values) {
+    const match = findSourceMatches(source, value)[0];
+    if (!match) return null;
+    excerpts.push(originalSource.slice(match.start, match.end));
+  }
+  return excerpts;
+}
+
+function normalizedStrings(value: unknown): string[] | null {
+  return Array.isArray(value) && value.every(nonEmptyString) ? value : null;
+}
+
+function failure(issue: AnalysisOutputIssueCode): AnalysisOutputValidation {
   return { success: false, issues: [issue] };
 }
 
@@ -140,16 +236,7 @@ export function parseAnalysisOutput(
     return failure("invalid_collections");
   }
 
-  const rawStructure = input.documentStructure;
-  if (
-    !isRecord(rawStructure) ||
-    !hasExactKeys(rawStructure, ["sectionOrder", "suggestionOrder"]) ||
-    !stringArray(rawStructure.sectionOrder) ||
-    !stringArray(rawStructure.suggestionOrder)
-  ) {
-    return failure("invalid_document_structure");
-  }
-
+  const source = normalizeWithSourceRanges(sourceResume);
   const jobRequirements: JobRequirement[] = [];
   const requirementIds = new Set<string>();
 
@@ -167,41 +254,45 @@ export function parseAnalysisOutput(
       !Array.isArray(rawRequirement.pointsToConfirm) ||
       !rawRequirement.pointsToConfirm.every(nonEmptyString)
     ) {
-      return failure("invalid_requirement");
+      continue;
     }
 
     const status = rawRequirement.status as RequirementStatus;
-    const evidence = rawRequirement.evidence as string[];
-    const pointsToConfirm = rawRequirement.pointsToConfirm as string[];
+    if (requirementIds.has(rawRequirement.id)) continue;
 
-    if (
-      requirementIds.has(rawRequirement.id) ||
-      !exactExcerpts(evidence, sourceResume) ||
-      (status === "not_demonstrated" && (evidence.length > 0 || pointsToConfirm.length === 0)) ||
-      (status !== "not_demonstrated" && evidence.length === 0)
-    ) {
-      return failure("unsupported_requirement");
-    }
+    const matchedEvidence = canonicalExcerpts(
+      rawRequirement.evidence as string[],
+      source,
+      sourceResume,
+    );
+    const supportedStatus = status !== "not_demonstrated" && matchedEvidence?.length
+      ? status
+      : "not_demonstrated";
+    const evidence = supportedStatus === "not_demonstrated" ? [] : matchedEvidence!;
+    const pointsToConfirm = rawRequirement.pointsToConfirm as string[];
+    const safePointsToConfirm = supportedStatus === "not_demonstrated" && pointsToConfirm.length === 0
+      ? [`Confirme se você possui experiência ou qualificação relacionada a: ${rawRequirement.requirement}.`]
+      : pointsToConfirm;
 
     requirementIds.add(rawRequirement.id);
     jobRequirements.push({
       id: rawRequirement.id,
       requirement: rawRequirement.requirement,
-      status,
+      status: supportedStatus,
       evidence,
-      pointsToConfirm,
+      pointsToConfirm: safePointsToConfirm,
     });
   }
 
   const suggestions: AnalysisSuggestion[] = [];
   const suggestionIds = new Set<string>();
-  const sourceRanges: Array<{ start: number; end: number }> = [];
 
   for (const rawSuggestion of input.suggestions) {
     if (
       !isRecord(rawSuggestion) ||
       !hasExactKeys(rawSuggestion, [
         "id",
+        "category",
         "section",
         "originalText",
         "suggestedText",
@@ -211,6 +302,7 @@ export function parseAnalysisOutput(
         "pointsToConfirm",
       ]) ||
       !nonEmptyString(rawSuggestion.id) ||
+      (rawSuggestion.category !== "job_alignment" && rawSuggestion.category !== "proofreading") ||
       !nonEmptyString(rawSuggestion.section) ||
       !nonEmptyString(rawSuggestion.originalText) ||
       !nonEmptyString(rawSuggestion.suggestedText) ||
@@ -220,71 +312,85 @@ export function parseAnalysisOutput(
       !Array.isArray(rawSuggestion.pointsToConfirm) ||
       !rawSuggestion.pointsToConfirm.every(nonEmptyString)
     ) {
-      return failure("invalid_suggestion");
+      continue;
     }
 
-    const start = sourceResume.indexOf(rawSuggestion.originalText);
-    const end = start + rawSuggestion.originalText.length;
-    const hasUniqueSource =
-      start >= 0 && sourceResume.indexOf(rawSuggestion.originalText, start + 1) === -1;
-    const relatedRequirementsAreSupported = rawSuggestion.relatedRequirementIds.every(
-      (id) =>
-        jobRequirements.some(
-          (requirement) =>
-            requirement.id === id && requirement.status !== "not_demonstrated",
-        ),
+    if (suggestionIds.has(rawSuggestion.id)) continue;
+
+    const originalMatches = findSourceMatches(source, rawSuggestion.originalText);
+    const originalRange = originalMatches.length === 1 ? originalMatches[0] : undefined;
+    const sourceFacts = canonicalExcerpts(
+      rawSuggestion.sourceFacts as string[],
+      source,
+      sourceResume,
     );
+    const relatedRequirementIds = [...new Set(rawSuggestion.relatedRequirementIds as string[])].filter(
+      (id) => jobRequirements.some(
+        (requirement) => requirement.id === id && requirement.status !== "not_demonstrated",
+      ),
+    );
+    const category = rawSuggestion.category as SuggestionCategory;
+    const isSupportedSuggestionType = category === "proofreading"
+      ? rawSuggestion.relatedRequirementIds.length === 0 &&
+        rawSuggestion.sourceFacts.length === 0 &&
+        rawSuggestion.pointsToConfirm.length === 0
+      : Boolean(sourceFacts?.length) && relatedRequirementIds.length > 0;
 
     if (
-      suggestionIds.has(rawSuggestion.id) ||
-      !hasUniqueSource ||
-      rawSuggestion.suggestedText === rawSuggestion.originalText ||
-      !exactExcerpts(rawSuggestion.sourceFacts, sourceResume) ||
-      rawSuggestion.sourceFacts.length === 0 ||
-      rawSuggestion.relatedRequirementIds.length === 0 ||
-      !relatedRequirementsAreSupported
-    ) {
-      return failure("unsupported_suggestion");
-    }
+      !originalRange ||
+      rawSuggestion.suggestedText.trim() === sourceResume.slice(originalRange.start, originalRange.end).trim() ||
+      !sourceFacts ||
+      !isSupportedSuggestionType
+    ) continue;
 
     suggestionIds.add(rawSuggestion.id);
-    sourceRanges.push({ start, end });
     suggestions.push({
       id: rawSuggestion.id,
+      category,
       section: rawSuggestion.section,
-      originalText: rawSuggestion.originalText,
+      originalText: sourceResume.slice(originalRange.start, originalRange.end),
       suggestedText: rawSuggestion.suggestedText,
-      relatedRequirementIds: rawSuggestion.relatedRequirementIds,
+      relatedRequirementIds,
       rationale: rawSuggestion.rationale,
-      sourceFacts: rawSuggestion.sourceFacts,
-      pointsToConfirm: rawSuggestion.pointsToConfirm,
-      sourceRange: { start, end },
+      sourceFacts,
+      pointsToConfirm: rawSuggestion.pointsToConfirm as string[],
+      sourceRange: originalRange,
     });
   }
 
-  const orderedSuggestionIds = rawStructure.suggestionOrder as string[];
-  const orderedSections = rawStructure.sectionOrder as string[];
-  const hasValidStructure =
-    new Set(orderedSuggestionIds).size === orderedSuggestionIds.length &&
-    orderedSuggestionIds.length === suggestionIds.size &&
-    orderedSuggestionIds.every((id) => suggestionIds.has(id)) &&
-    new Set(orderedSections).size === orderedSections.length &&
-    suggestions.every((suggestion) => orderedSections.includes(suggestion.section));
+  const nonOverlappingSuggestions: AnalysisSuggestion[] = [];
+  const acceptedRanges: SourceRange[] = [];
+  for (const suggestion of [...suggestions].sort((left, right) => left.sourceRange.start - right.sourceRange.start)) {
+    const overlaps = acceptedRanges.some(
+      (range) => suggestion.sourceRange.start < range.end && range.start < suggestion.sourceRange.end,
+    );
+    if (overlaps) {
+      suggestionIds.delete(suggestion.id);
+      continue;
+    }
+    acceptedRanges.push(suggestion.sourceRange);
+    nonOverlappingSuggestions.push(suggestion);
+  }
 
-  sourceRanges.sort((left, right) => left.start - right.start);
-  const rangesOverlap = sourceRanges.some(
-    (range, index) => index > 0 && range.start < sourceRanges[index - 1]!.end,
-  );
+  const rawStructure = isRecord(input.documentStructure) ? input.documentStructure : {};
+  const requestedSuggestionOrder = normalizedStrings(rawStructure.suggestionOrder) ?? [];
+  const orderedSuggestionIds = [...new Set(requestedSuggestionOrder.filter((id) => suggestionIds.has(id)))];
+  for (const suggestion of nonOverlappingSuggestions) {
+    if (!orderedSuggestionIds.includes(suggestion.id)) orderedSuggestionIds.push(suggestion.id);
+  }
 
-  if (!hasValidStructure || rangesOverlap) {
-    return failure("invalid_document_structure");
+  const usedSections = new Set(nonOverlappingSuggestions.map((suggestion) => suggestion.section));
+  const requestedSections = normalizedStrings(rawStructure.sectionOrder) ?? [];
+  const orderedSections = [...new Set(requestedSections.filter((section) => usedSections.has(section)))];
+  for (const suggestion of nonOverlappingSuggestions) {
+    if (!orderedSections.includes(suggestion.section)) orderedSections.push(suggestion.section);
   }
 
   return {
     success: true,
     data: {
       jobRequirements,
-      suggestions,
+      suggestions: nonOverlappingSuggestions,
       documentStructure: {
         sectionOrder: orderedSections,
         suggestionOrder: orderedSuggestionIds,

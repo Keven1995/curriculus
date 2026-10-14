@@ -56,7 +56,7 @@ export function HomeHero() {
             Começar minha análise
             <ArrowRight aria-hidden="true" />
           </a>
-          <span className={styles.heroActionNote}>Sem cobrança para revisar as sugestões</span>
+          <span className={styles.heroActionNote}>Revise alinhamento e ortografia sem cobrança</span>
         </div>
 
         <div className={styles.heroPromises} aria-label="Compromissos do Curriculus">

@@ -3,6 +3,7 @@ import test from "node:test";
 import "../test/setup-dom.js";
 import {
   approvedSuggestionIds,
+  buildResumeWithApprovedSuggestions,
   isAnalysisApiResponse,
   requestAnalysis,
   summarizeDecisions,
@@ -18,6 +19,7 @@ const apiResponse: AnalysisApiResponse = {
     suggestions: [
       {
         id: "suggestion-1",
+        category: "job_alignment",
         section: "Experiência",
         originalText: "Desenvolvi APIs.",
         suggestedText: "Desenvolvi APIs REST.",
@@ -29,6 +31,7 @@ const apiResponse: AnalysisApiResponse = {
       },
       {
         id: "suggestion-2",
+        category: "job_alignment",
         section: "Formação",
         originalText: "Graduação em Sistemas.",
         suggestedText: "Graduação em Sistemas de Informação.",
@@ -63,7 +66,6 @@ test("posts the validated form and returns the analysis response", async () => {
   let sentBody: Record<string, unknown> | undefined;
   const response = await requestAnalysis(
     {
-      jobUrl: "https://example.com/job",
       jobDescription: "Vaga de exemplo",
       resume: "Currículo sintético",
       acknowledged: true,
@@ -90,8 +92,7 @@ test("maps server validation errors without exposing arbitrary response text", a
   await assert.rejects(
     requestAnalysis(
       {
-        jobUrl: "https://example.com/job",
-        jobDescription: "",
+        jobDescription: "Vaga de exemplo",
         resume: "synthetic resume",
         acknowledged: true,
       },
@@ -127,4 +128,46 @@ test("tracks local decisions and returns only approved suggestions in document o
     pending: 0,
   });
   assert.deepEqual(approvedSuggestionIds(apiResponse.analysis, decisions), ["suggestion-1"]);
+});
+
+test("builds a final text from only approved suggestions and ignores stale source ranges", () => {
+  const resume = "Desenvolvi APIs.\nGraduação em Sistemas.";
+  const secondStart = resume.indexOf("Graduação em Sistemas.");
+  const analysis = {
+    ...apiResponse.analysis,
+    suggestions: [
+      apiResponse.analysis.suggestions[0]!,
+      {
+        ...apiResponse.analysis.suggestions[1]!,
+        sourceRange: { start: secondStart, end: secondStart + "Graduação em Sistemas.".length },
+      },
+    ],
+  };
+  const decisions = { "suggestion-1": "approved", "suggestion-2": "rejected" } as const;
+
+  assert.equal(
+    buildResumeWithApprovedSuggestions(resume, analysis, decisions),
+    "Desenvolvi APIs REST.\nGraduação em Sistemas.",
+  );
+  assert.equal(
+    buildResumeWithApprovedSuggestions(resume, analysis, {
+      "suggestion-1": "approved",
+      "suggestion-2": "approved",
+    }),
+    "Desenvolvi APIs REST.\nGraduação em Sistemas de Informação.",
+  );
+
+  const staleAnalysis = {
+    ...analysis,
+    suggestions: analysis.suggestions.map((suggestion, index) => index === 1
+      ? { ...suggestion, sourceRange: { start: 0, end: 1 } }
+      : suggestion),
+  };
+  assert.equal(
+    buildResumeWithApprovedSuggestions(resume, staleAnalysis, {
+      "suggestion-1": "rejected",
+      "suggestion-2": "approved",
+    }),
+    resume,
+  );
 });

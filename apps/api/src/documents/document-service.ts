@@ -9,6 +9,8 @@ import type {
 import { createDocumentAccessToken, verifyDocumentAccessToken } from "./document-access-token.js";
 import { ApprovedSuggestionsError, buildFinalResume } from "./document-content.js";
 import { renderResumePdf } from "./pdf-renderer.js";
+import { renderLayoutTextResumePdf } from "../resume-layout/layout-text-pdf-renderer.js";
+import type { ResumeLayoutTemplate } from "../resume-layout/resume-layout-types.js";
 
 export type DocumentServiceErrorCode =
   | "PERSISTENCE_UNAVAILABLE"
@@ -58,7 +60,13 @@ export type GeneratedDocumentResponse = {
   created: boolean;
 };
 
-export type PdfRenderer = (resume: string) => Promise<Buffer>;
+export type PdfRenderer = (resume: string, layoutTemplate?: ResumeLayoutTemplate) => Promise<Buffer>;
+
+async function renderSessionResumePdf(resume: string, layoutTemplate?: ResumeLayoutTemplate): Promise<Buffer> {
+  return layoutTemplate
+    ? renderLayoutTextResumePdf(layoutTemplate, resume)
+    : renderResumePdf(resume);
+}
 
 function isUuid(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
@@ -73,7 +81,7 @@ export class DocumentService {
     private readonly repository: DocumentRepository,
     private readonly storage: PrivateDocumentStorage,
     private readonly accessSecret: string,
-    private readonly renderPdf: PdfRenderer = renderResumePdf,
+    private readonly renderPdf: PdfRenderer = renderSessionResumePdf,
     private readonly now: () => Date = () => new Date(),
   ) {
     if (Buffer.byteLength(accessSecret, "utf8") < 32) {
@@ -140,7 +148,7 @@ export class DocumentService {
 
     let pdf: Buffer;
     try {
-      pdf = await this.renderPdf(finalResume);
+      pdf = await this.renderPdf(finalResume, session.resumeLayoutTemplate);
     } catch {
       throw new DocumentServiceError("DOCUMENT_RENDER_FAILED");
     }

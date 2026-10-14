@@ -1,3 +1,5 @@
+import type { AnalysisOutputIssueCode } from "./analysis-output.js";
+
 export class JobDescriptionRequiredError extends Error {
   constructor() {
     super("A descrição da vaga é necessária para realizar a análise.");
@@ -16,7 +18,7 @@ export class AnalysisInputTokenLimitError extends Error {
 }
 
 export class InvalidAnalysisOutputError extends Error {
-  constructor() {
+  constructor(readonly validationFailure: "invalid_json" | AnalysisOutputIssueCode = "invalid_json") {
     super("A resposta estruturada da análise é inválida.");
     this.name = "InvalidAnalysisOutputError";
   }
@@ -36,6 +38,7 @@ export type AnalysisProviderFailureReason =
   | "unknown";
 
 export type AnalysisProviderDiagnostics = {
+  provider?: "openai" | "gemini";
   reason: AnalysisProviderFailureReason;
   httpStatus?: number;
   requestId?: string;

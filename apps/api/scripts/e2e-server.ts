@@ -4,8 +4,7 @@ import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createApp } from "../src/app.js";
-import type { AnalysisOutput } from "../src/analyses/analysis-output.js";
-import type { AnalysisService } from "../src/analyses/analysis-service.js";
+import { createConfiguredAnalysisService } from "../src/analyses/configured-analysis-service.js";
 import PDFDocument from "pdfkit";
 import { DocumentService } from "../src/documents/document-service.js";
 import { PrivateFileDocumentStorage } from "../src/documents/private-file-document-storage.js";
@@ -28,35 +27,6 @@ if (
 ) {
   throw new Error("The E2E server can only run explicitly in a non-production test environment.");
 }
-
-const analysisOutput: AnalysisOutput = {
-  jobRequirements: [
-    {
-      id: "req-java",
-      requirement: "Experiência com Java",
-      status: "demonstrated",
-      evidence: ["Java"],
-      pointsToConfirm: [],
-    },
-  ],
-  suggestions: [
-    {
-      id: "suggestion-java",
-      section: "Experiência",
-      originalText: "Trabalhei com Java para construir APIs REST.",
-      suggestedText: "Desenvolvi APIs REST com Java.",
-      relatedRequirementIds: ["req-java"],
-      rationale: "Destaca a experiência já descrita no currículo.",
-      sourceFacts: ["Java", "APIs REST"],
-      pointsToConfirm: [],
-      sourceRange: { start: 0, end: "Trabalhei com Java para construir APIs REST.".length },
-    },
-  ],
-  documentStructure: {
-    sectionOrder: ["Experiência"],
-    suggestionOrder: ["suggestion-java"],
-  },
-};
 
 class E2ePaymentProvider implements PixPaymentProvider {
   private readonly payments = new Map<string, ProviderPaymentDetails>();
@@ -109,14 +79,12 @@ class E2ePaymentProvider implements PixPaymentProvider {
 
 const repository = new EphemeralSessionRepository();
 const paymentProvider = new E2ePaymentProvider();
-const analysisService: AnalysisService = {
-  async analyze() {
-    return {
-      analysis: analysisOutput,
-      usage: { inputTokens: 100, outputTokens: 250, totalTokens: 350, estimatedCostUsd: null },
-    };
-  },
-};
+const analysisService = createConfiguredAnalysisService({
+  NODE_ENV: "test",
+  AI_ANALYSIS_ENABLED: "true",
+  AI_PROVIDER: "mock",
+} as NodeJS.ProcessEnv);
+if (!analysisService) throw new Error("The E2E fixture analysis provider failed to configure.");
 const documentDirectory = join(tmpdir(), `curriculus-e2e-${e2eRunId}`);
 await mkdir(documentDirectory, { recursive: true });
 process.once("exit", () => {
@@ -135,7 +103,7 @@ const resumeFixturePdf = await new Promise<Buffer>((resolve, reject) => {
   pdf.on("data", (chunk: Buffer) => chunks.push(chunk));
   pdf.once("error", reject);
   pdf.once("end", () => resolve(Buffer.concat(chunks)));
-  pdf.font("Helvetica").fontSize(11).text("Trabalhei com Java para construir APIs REST.");
+  pdf.font("Helvetica").fontSize(11).text("Trabalhei com Java para construir APIs REST. Tenho experiencia com documentacao tecnica.");
   pdf.end();
 });
 const app = createApp({

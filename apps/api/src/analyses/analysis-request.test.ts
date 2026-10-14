@@ -25,6 +25,18 @@ test("accepts a description and resume and returns normalized input", () => {
   }
 });
 
+test("accepts only a bounded opaque reference-layout identifier for the integrated flow", () => {
+  const valid = validateAnalysisRequest({
+    ...validRequest,
+    resumeLayoutTemplateId: "4e4f8a8c-7c1f-4fa7-a5a5-83eb983437ea",
+  });
+  assert.equal(valid.success, true);
+  if (valid.success) assert.equal(valid.data.resumeLayoutTemplateId, "4e4f8a8c-7c1f-4fa7-a5a5-83eb983437ea");
+
+  const invalid = validateAnalysisRequest({ ...validRequest, resumeLayoutTemplateId: { template: "client supplied" } });
+  assert.equal(invalid.success, false);
+});
+
 test("accepts an HTTP(S) URL without a pasted description", () => {
   const result = validateAnalysisRequest({
     jobUrl: "https://example.com/jobs/123",

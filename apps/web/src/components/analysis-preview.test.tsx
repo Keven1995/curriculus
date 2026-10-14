@@ -31,6 +31,7 @@ const analysis: AnalysisOutput = {
   suggestions: [
     {
       id: "suggestion-1",
+      category: "job_alignment",
       section: "Experiência",
       originalText: "Trabalhei com Java.",
       suggestedText: "Desenvolvi soluções usando Java.",
@@ -113,6 +114,41 @@ test("offers keyboard-accessible approve and reject buttons with state feedback"
   assert.equal(screen.getByRole("button", { name: "Aprovar sugestão: Experiência" }).getAttribute("aria-pressed"), "true");
   assert.ok(screen.getByText("Aprovada localmente"));
   assert.match(screen.getByText(/Aprovadas: 1/).textContent ?? "", /Pendentes: 0/);
+});
+
+test("identifies proofreading corrections separately and allows approving them", () => {
+  const proofreadingAnalysis: AnalysisOutput = {
+    ...analysis,
+    jobRequirements: [],
+    suggestions: [{
+      ...analysis.suggestions[0]!,
+      category: "proofreading",
+      section: "Ortografia e pontuação",
+      originalText: "experiencia",
+      suggestedText: "experiência",
+      relatedRequirementIds: [],
+      sourceFacts: [],
+      rationale: "Corrige a acentuação conforme a ortografia brasileira.",
+      pointsToConfirm: [],
+    }],
+    documentStructure: {
+      sectionOrder: ["Ortografia e pontuação"],
+      suggestionOrder: ["suggestion-1"],
+    },
+  };
+
+  render(
+    <AnalysisPreview
+      analysis={proofreadingAnalysis}
+      decisions={{}}
+      onDecision={() => undefined}
+      styles={styles}
+    />,
+  );
+
+  assert.ok(screen.getByText("Revisão ortográfica"));
+  assert.ok(screen.getByText("experiência"));
+  assert.ok(screen.getByRole("button", { name: "Aprovar correção ortográfica: Ortografia e pontuação" }));
 });
 
 test("blocks copy and context menu only inside the preview and explains the limits", () => {

@@ -18,6 +18,7 @@ const apiResponse: AnalysisApiResponse = {
     suggestions: [
       {
         id: "suggestion-1",
+        category: "job_alignment",
         section: "Experiência",
         originalText: "Desenvolvi APIs.",
         suggestedText: "Desenvolvi APIs REST.",
@@ -79,6 +80,73 @@ test("extracts a selected PDF in the browser and submits only the resulting text
   assert.equal("file" in (submitted ?? {}), false);
 });
 
+test("carries an uploaded reference layout through AI review to the existing approved-PDF download flow", async () => {
+  const submittedAnalysis: Record<string, unknown>[] = [];
+  let documentRequest: Record<string, unknown> | undefined;
+  const importedLayout = {
+    templateId: "4e4f8a8c-7c1f-4fa7-a5a5-83eb983437ea",
+    template: {
+      schemaVersion: "2.0",
+      id: "sidebar-dark-header-color-v1",
+      page: { format: "A4", widthPt: 595.28, heightPt: 841.89, marginPt: 30 },
+      palette: { sidebar: "#354550", main: "#FFFFFF", headerApprox: "#BACD9E", text: "#111111" },
+      columns: { sidebarWidthPt: 170, gapPt: 20, sidebarRepeats: true },
+      header: { heightPt: 140, nameUppercase: true },
+      typography: { namePt: 26, sectionPt: 14, bodyPt: 10.5 },
+      sections: ["summary", "experience", "education", "certifications"],
+      sidebarSections: ["photo", "contact", "skills"],
+      overflow: { wrapText: true, pageBreak: true, keepExperienceHeadingWithFirstBullet: true },
+      detection: { confidence: 0.55, detectedColumns: 2, warnings: [] },
+    },
+    rawExtraction: { schema_version: "1.0", pages: [] },
+    detectedSections: [],
+    expiresAt: "2026-01-02T00:00:00.000Z",
+  };
+  const fetcher: typeof fetch = async (url, init) => {
+    const requestUrl = String(url);
+    if (requestUrl.endsWith("/features")) return new Response(JSON.stringify({ resumeLayoutImport: true }));
+    if (requestUrl.endsWith("/resume-layouts/import")) return new Response(JSON.stringify(importedLayout), { status: 201 });
+    if (requestUrl.endsWith("/analyses")) {
+      submittedAnalysis.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(JSON.stringify({ ...apiResponse, localTestMode: true, usesReferenceLayout: true }), { status: 201 });
+    }
+    assert.equal(requestUrl, "https://api.example.test/__local-test/sessions/session-test-id/documents");
+    documentRequest = JSON.parse(String(init?.body));
+    return new Response(JSON.stringify({
+      format: "pdf",
+      downloadPath: "/documents/session-test-id?token=local-capability",
+      expiresAt: "2026-01-02T00:00:00.000Z",
+    }), { status: 201 });
+  };
+
+  render(
+    <AnalysisFlow
+      styles={styles}
+      apiBaseUrl="https://api.example.test"
+      fetcher={fetcher}
+      pdfTextExtractor={async () => "Desenvolvi APIs."}
+    />,
+  );
+  fireEvent.change(screen.getByLabelText(/Descrição da vaga/), { target: { value: "Vaga de pessoa desenvolvedora" } });
+  fireEvent.change(screen.getByLabelText(/Anexar currículo em PDF/), {
+    target: { files: [new File([new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 1])], "referencia.pdf", { type: "application/pdf" })] },
+  });
+  fireEvent.click(screen.getByRole("checkbox"));
+  await screen.findByText("Layout vinculado ao PDF final");
+  fireEvent.click(screen.getByRole("button", { name: /gerar sugestões/i }));
+  await screen.findByRole("heading", { name: "Revise as sugestões" });
+
+  assert.equal(submittedAnalysis.length, 1);
+  assert.equal(submittedAnalysis[0]?.resumeLayoutTemplateId, importedLayout.templateId);
+  fireEvent.click(screen.getByRole("button", { name: "Aprovar sugestão: Experiência" }));
+  fireEvent.click(screen.getByRole("button", { name: "Gerar PDF de teste (sem cobrança)" }));
+
+  const download = await screen.findByRole("link", { name: "Baixar currículo em PDF" });
+  assert.deepEqual(documentRequest, { approvedSuggestionIds: ["suggestion-1"] });
+  assert.equal(download.getAttribute("href"), "https://api.example.test/documents/session-test-id?token=local-capability");
+  assert.ok(screen.getByText(/PDF será gerado no layout extraído do PDF/i));
+});
+
 test("shows a safe error and does not replace the current curriculum when PDF extraction fails", async () => {
   render(
     <AnalysisFlow
@@ -105,7 +173,7 @@ function fillValidForm() {
     target: { value: "Vaga de pessoa desenvolvedora" },
   });
   fireEvent.change(screen.getByLabelText("Seu currículo em texto"), {
-    target: { value: "Currículo de teste" },
+    target: { value: "Desenvolvi APIs." },
   });
   fireEvent.click(screen.getByRole("checkbox"));
 }
@@ -126,11 +194,11 @@ test("validates locally before sending and keeps entered text on errors", () => 
   fireEvent.click(screen.getByRole("button", { name: /gerar sugestões/i }));
 
   assert.equal(calls, 0);
-  assert.equal(screen.getAllByText("Informe o link ou a descrição da vaga.").length, 2);
+  assert.equal(screen.getByText("Cole a descrição completa da vaga.").textContent, "Cole a descrição completa da vaga.");
   assert.equal((screen.getByLabelText("Seu currículo em texto") as HTMLTextAreaElement).value, "");
 });
 
-test("does not send a resume when only a job link is provided", () => {
+test("requires pasted job text and no longer presents a link field", () => {
   let calls = 0;
   render(
     <AnalysisFlow
@@ -141,17 +209,15 @@ test("does not send a resume when only a job link is provided", () => {
       }}
     />,
   );
-  fireEvent.change(screen.getByLabelText(/Link da vaga/), {
-    target: { value: "https://example.com/job" },
-  });
   fireEvent.change(screen.getByLabelText("Seu currículo em texto"), {
     target: { value: "Currículo sintético" },
   });
   fireEvent.click(screen.getByRole("checkbox"));
+  assert.equal(screen.queryByLabelText(/Link da vaga/), null);
   fireEvent.click(screen.getByRole("button", { name: /gerar sugestões/i }));
 
   assert.equal(calls, 0);
-  assert.equal(screen.getAllByText(/Cole a descrição completa da vaga/).length, 2);
+  assert.equal(screen.getByText("Cole a descrição completa da vaga.").textContent, "Cole a descrição completa da vaga.");
 });
 
 test("submits once, displays the accessible preview, and keeps decisions local", async () => {
@@ -176,12 +242,14 @@ test("submits once, displays the accessible preview, and keeps decisions local",
   await screen.findByRole("heading", { name: "Revise as sugestões" });
   assert.equal(document.activeElement, screen.getByRole("heading", { name: "Revise as sugestões" }));
   assert.equal(calls, 1);
-  assert.equal(submitted?.resume, "Currículo de teste");
+  assert.equal(submitted?.resume, "Desenvolvi APIs.");
   assert.ok(screen.getByText("Desenvolvi APIs REST."));
-  assert.ok(screen.getByText(/o preview, por si só, não inicia uma cobrança/i));
+  assert.ok(screen.getByText(/baixar uma versão em texto na etapa seguinte, sem cobrança/i));
 
   fireEvent.click(screen.getByRole("button", { name: "Aprovar sugestão: Experiência" }));
   assert.ok(screen.getByText("Aprovada localmente"));
+  fireEvent.click(screen.getByRole("button", { name: /Aplicar sugestões aprovadas \(1\)/ }));
+  assert.equal((screen.getByLabelText("Currículo final editável") as HTMLTextAreaElement).value, "Desenvolvi APIs REST.");
   assert.equal(calls, 1);
 });
 
