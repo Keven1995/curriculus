@@ -213,6 +213,50 @@ function canonicalExcerpts(values: string[], source: NormalizedText, originalSou
   return excerpts;
 }
 
+function normalizeClaimText(value: string): string {
+  return value.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase();
+}
+
+const highRiskClaimPatterns = [
+  /\b(?:lider\w*|gerenci\w*|coorden\w*|supervision\w*|dirigi\w*|mentor\w*|equipe\w*|times?)\b/gu,
+  /\b(?:certific\w*|diplom\w*|bacharel\w*|mestr\w*|doutor\w*|posgradu\w*|licenci\w*)\b/gu,
+  /\b(?:reduzi|reduziu|reduzimos|aumentei|aumentou|economizei|economizou|otimizei|otimizou|melhorei|melhorou|alcancei|alcancou|gerei|gerou|entreguei|entregou|garanti|garantiu|tripliquei|triplicou|dobrei|dobrou|resultado\w*|crescimento|impacto)\b/gu,
+];
+
+function hasUnsupportedHighRiskClaims(suggestedText: string, sourceResume: string): boolean {
+  const suggestion = normalizeClaimText(suggestedText);
+  const source = normalizeClaimText(sourceResume);
+
+  for (const pattern of highRiskClaimPatterns) {
+    for (const match of suggestion.matchAll(pattern)) {
+      if (!source.includes(match[0])) return true;
+    }
+  }
+
+  const sourceNumbers = new Set(
+    [...source.matchAll(/\b\d+(?:[.,]\d+)?\s?%?/gu)].map(([number]) => number.replace(/\s/gu, "")),
+  );
+  for (const [number] of suggestion.matchAll(/\b\d+(?:[.,]\d+)?\s?%?/gu)) {
+    if (!sourceNumbers.has(number.replace(/\s/gu, ""))) return true;
+  }
+
+  // Acronyms and title-cased names commonly identify tools, companies, schools, and credentials.
+  const sourceNames = new Set(
+    [...sourceResume.matchAll(/\b(?:[A-Z][A-Z\d+#.-]{1,}|[A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][\p{Ll}\p{M}\d+#.-]{2,})\b/gu)]
+      .map(([name]) => normalizeClaimText(name)),
+  );
+  const suggestionNames = [...suggestedText.matchAll(/\b(?:[A-Z][A-Z\d+#.-]{1,}|[A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][\p{Ll}\p{M}\d+#.-]{2,})\b/gu)];
+  const firstWord = suggestedText.match(/^\s*([\p{L}\p{N}+#.-]+)/u)?.[1];
+  for (const [name] of suggestionNames) {
+    // Sentence-initial capitalization is ambiguous; all-caps acronyms remain checked everywhere.
+    const isAcronym = /^[A-Z][A-Z\d+#.-]{1,}$/u.test(name);
+    if (!isAcronym && name === firstWord) continue;
+    if (!sourceNames.has(normalizeClaimText(name))) return true;
+  }
+
+  return false;
+}
+
 function normalizedStrings(value: unknown): string[] | null {
   return Array.isArray(value) && value.every(nonEmptyString) ? value : null;
 }
@@ -340,7 +384,8 @@ export function parseAnalysisOutput(
       !originalRange ||
       rawSuggestion.suggestedText.trim() === sourceResume.slice(originalRange.start, originalRange.end).trim() ||
       !sourceFacts ||
-      !isSupportedSuggestionType
+      !isSupportedSuggestionType ||
+      hasUnsupportedHighRiskClaims(rawSuggestion.suggestedText, sourceResume)
     ) continue;
 
     suggestionIds.add(rawSuggestion.id);

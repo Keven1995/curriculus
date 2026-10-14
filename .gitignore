@@ -7,6 +7,7 @@ test-results/
 playwright-report/
 .env
 .env.*
+!.env.staging.example
 .vercel/
 .turbo/
 *.log
@@ -20,6 +21,7 @@ playwright-report/
 *.md
 !DEPLOYMENT-RUNBOOK.md
 !LOCAL-DEVELOPMENT.md
+!research/sprint5-quality/REPORT.md
 
 # Arquivos locais do sistema operacional e editores
 .DS_Store

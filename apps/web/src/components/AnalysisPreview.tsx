@@ -45,6 +45,9 @@ export function AnalysisPreview({
           <p className={styles.step}>02</p>
           <h2 id="preview-title" tabIndex={-1} ref={previewTitleRef}>Revise as sugestões</h2>
           <p>Revise ajustes para a vaga e correções de escrita; aprove apenas o que fizer sentido.</p>
+          <p className={styles.help} role="note">
+            As evidências são trechos encontrados no currículo; a redação sugerida é uma proposta, não um fato verificado. Confira antes de aprovar.
+          </p>
         </div>
         <p className={styles.decisionSummary} aria-live="polite">
           Aprovadas: {summary.approved} · Rejeitadas: {summary.rejected} · Pendentes: {summary.pending}

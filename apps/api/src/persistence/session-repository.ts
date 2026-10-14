@@ -3,6 +3,7 @@ import type { AnalysisRequest } from "../analyses/analysis-request.js";
 import type { AnalysisUsage } from "../analyses/analysis-service.js";
 import type { ResumeLayoutTemplate } from "../resume-layout/resume-layout-types.js";
 import type { ResumeLayoutTemplateStore } from "../resume-layout/resume-layout-store.js";
+import type { RateLimitDecision, RateLimitPolicy } from "../security/rate-limit-types.js";
 
 export type QueryResult<Row extends Record<string, unknown>> = {
   rows: Row[];
@@ -73,6 +74,8 @@ export type OrderRecord = {
 
 export interface SessionRepository extends ResumeLayoutTemplateStore {
   isReady(): Promise<boolean>;
+  consumeDistributedRateLimit?(scope: string, clientKey: string, policy: RateLimitPolicy): Promise<RateLimitDecision>;
+  deleteExpiredRateLimitBuckets?(): Promise<number>;
   createSession(input: CreateAnalysisSession): Promise<SessionReference>;
   createSessionWithTemporaryLayout(input: CreateAnalysisSession, templateId: string): Promise<SessionReference | null>;
   findActiveSession(id: string): Promise<StoredAnalysisSession | null>;
@@ -168,10 +171,78 @@ export class PostgresSessionRepository implements SessionRepository {
       await this.database.query<SessionRow>(
         "SELECT id, pix_qr_code, pix_qr_code_base64 FROM orders LIMIT 0",
       );
+      await this.database.query<SessionRow>(
+        "SELECT scope, client_hash, window_ms, expires_at, request_count FROM rate_limit_buckets LIMIT 0",
+      );
       return true;
     } catch {
       return false;
     }
+  }
+
+  async consumeDistributedRateLimit(
+    scope: string,
+    clientKey: string,
+    policy: RateLimitPolicy,
+  ): Promise<RateLimitDecision> {
+    if (!/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/.test(scope)) {
+      throw new Error("Invalid rate limit scope.");
+    }
+    if (!/^[a-f0-9]{64}$/.test(clientKey)) {
+      throw new Error("Rate limit client keys must be SHA-256 HMAC digests.");
+    }
+    if (
+      !Number.isSafeInteger(policy.limit) || policy.limit < 1 || policy.limit >= 2_147_483_647 ||
+      !Number.isSafeInteger(policy.windowMs) || policy.windowMs < 1 || policy.windowMs > 2_147_483_647
+    ) {
+      throw new Error("Rate limit policy is outside PostgreSQL integer bounds.");
+    }
+
+    const result = await this.database.query<SessionRow>(
+      `WITH current_window AS (
+         SELECT to_timestamp(
+           floor(extract(epoch FROM clock_timestamp()) * 1000 / $3) * $3 / 1000.0
+         ) AS started_at
+       )
+       INSERT INTO rate_limit_buckets (
+         scope, client_hash, window_ms, window_started_at, expires_at, request_count
+       )
+       SELECT $1, $2, $3, started_at,
+              started_at + ($3 * INTERVAL '1 millisecond'), 1
+         FROM current_window
+       ON CONFLICT (scope, client_hash, window_ms, window_started_at)
+       DO UPDATE SET request_count = LEAST($4, rate_limit_buckets.request_count + 1)
+       RETURNING request_count,
+         GREATEST(1, CEIL(EXTRACT(EPOCH FROM (expires_at - clock_timestamp()))))::integer
+           AS retry_after_seconds`,
+      [scope, clientKey, policy.windowMs, policy.limit + 1],
+    );
+    const row = result.rows[0];
+    if (!row) throw new Error("PostgreSQL did not return the rate limit decision.");
+    const count = asNumber(row.request_count);
+    return {
+      allowed: count <= policy.limit,
+      remaining: Math.max(policy.limit - count, 0),
+      retryAfterSeconds: Math.max(1, Math.ceil(asNumber(row.retry_after_seconds))),
+    };
+  }
+
+  async deleteExpiredRateLimitBuckets(): Promise<number> {
+    const result = await this.database.query<SessionRow>(
+      `WITH expired AS (
+         SELECT ctid
+           FROM rate_limit_buckets
+          WHERE expires_at <= clock_timestamp()
+          ORDER BY expires_at
+          LIMIT 5000
+          FOR UPDATE SKIP LOCKED
+       )
+       DELETE FROM rate_limit_buckets AS buckets
+        USING expired
+        WHERE buckets.ctid = expired.ctid
+       RETURNING buckets.scope`,
+    );
+    return result.rowCount;
   }
 
   async createSession(input: CreateAnalysisSession): Promise<SessionReference> {

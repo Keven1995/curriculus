@@ -166,6 +166,28 @@ test("keeps non-approved provider states non-approved and processes duplicate no
   assert.equal(repository.currentOrder?.status, "rejected");
 });
 
+test("records provider expiration and rejects approvals received after checkout expiry", async () => {
+  const expiredRepository = new FakeWebhookRepository();
+  const expiredProvider = new FakeStatusProvider();
+  expiredProvider.result = approvedPayment({ status: "expired", dateApproved: null });
+  const expiredService = new PaymentWebhookService(expiredRepository, expiredProvider);
+
+  assert.equal(await expiredService.handlePaymentNotification("123456789"), "processed");
+  assert.equal(expiredRepository.currentOrder?.status, "expired");
+
+  const lateRepository = new FakeWebhookRepository();
+  lateRepository.currentOrder = {
+    ...order,
+    checkoutExpiresAt: new Date("2026-01-01T00:30:00.000Z"),
+  };
+  const lateProvider = new FakeStatusProvider();
+  const lateService = new PaymentWebhookService(lateRepository, lateProvider);
+
+  assert.equal(await lateService.handlePaymentNotification("123456789"), "ignored");
+  assert.equal(lateRepository.currentOrder?.status, "pending");
+  assert.equal(lateRepository.updates.length, 0);
+});
+
 test("replaying an approved notification keeps the order approved without a second state transition", async () => {
   const repository = new FakeWebhookRepository();
   const provider = new FakeStatusProvider();

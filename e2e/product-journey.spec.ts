@@ -64,6 +64,23 @@ test("presents the new landing page and its clear path to the analysis form", as
   await expect(page.getByLabel(/Descrição da vaga/)).toBeInViewport();
 });
 
+test("keeps the landing page and analysis intake usable at mobile width", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  await expect(page.getByRole("heading", { level: 1, name: /Um currículo mais alinhado à vaga/ })).toBeVisible();
+  await page.getByRole("link", { name: /Começar minha análise/ }).click();
+
+  const jobDescription = page.getByLabel(/Descrição da vaga/);
+  await expect(jobDescription).toBeInViewport();
+  await jobDescription.focus();
+  await expect(jobDescription).toBeFocused();
+  await expect(page.getByLabel(/Seu currículo em PDF/)).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: /Li o aviso/ })).toBeVisible();
+
+  const horizontalOverflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+  expect(horizontalOverflow).toBeLessThanOrEqual(1);
+});
+
 test("completes browser CORS PDF upload, edited final text, sandbox payment, private download and retention", async ({ page, request }) => {
   const sessionId = await createAnalysis(page, request);
   const reviewState = await request.get(`http://127.0.0.1:4174/__e2e/inspect/${sessionId}`);

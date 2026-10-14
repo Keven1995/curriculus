@@ -21,6 +21,17 @@ const webhookSecret = "webhook-test-secret";
 const webhookTimestamp = "1767225600";
 const webhookRequestId = "request-abc-123";
 const webhookPaymentId = "123456789";
+const testRateLimitHmacSecret = "test-rate-limit-secret-with-at-least-32-bytes";
+const allowRateLimitStore = {
+  async consume() {
+    return { allowed: true, remaining: 100, retryAfterSeconds: 60 };
+  },
+};
+const productionSecurityOptions = {
+  trustedProxyHops: 0,
+  rateLimitHmacSecret: testRateLimitHmacSecret,
+  rateLimitStore: allowRateLimitStore,
+};
 
 function webhookSignature(paymentId = webhookPaymentId) {
   const manifest = `id:${paymentId.toLowerCase()};request-id:${webhookRequestId};ts:${webhookTimestamp};`;
@@ -41,6 +52,26 @@ test("keeps the health endpoint available", async (context) => {
   });
 });
 
+test("separates liveness from readiness and checks PostgreSQL-backed dependencies", async (context) => {
+  const unavailableApp = createApp({ analysisService: null, sessionRepository: null });
+  const readyApp = createApp({
+    analysisService: null,
+    sessionRepository: { async isReady() { return true; } } as never,
+    rateLimitStore: allowRateLimitStore,
+    rateLimitHmacSecret: testRateLimitHmacSecret,
+  });
+  context.after(async () => {
+    await unavailableApp.close();
+    await readyApp.close();
+  });
+
+  assert.equal((await unavailableApp.inject({ method: "GET", url: "/health" })).statusCode, 200);
+  const notReady = await unavailableApp.inject({ method: "GET", url: "/ready" });
+  const ready = await readyApp.inject({ method: "GET", url: "/ready" });
+  assert.equal(notReady.statusCode, 503);
+  assert.deepEqual(ready.json(), { status: "ready" });
+});
+
 test("enforces an IP-scoped request limit and returns a retry hint", async (context) => {
   const app = createApp({
     analysisService: null,
@@ -49,13 +80,59 @@ test("enforces an IP-scoped request limit and returns a retry hint", async (cont
   });
   context.after(() => app.close());
 
-  const first = await app.inject({ method: "GET", url: "/health" });
-  const limited = await app.inject({ method: "GET", url: "/health" });
+  const first = await app.inject({ method: "GET", url: "/features" });
+  const limited = await app.inject({ method: "GET", url: "/features" });
 
   assert.equal(first.statusCode, 200);
   assert.equal(limited.statusCode, 429);
   assert.equal(limited.headers["retry-after"], "60");
   assert.equal(limited.json().error.code, "RATE_LIMITED");
+});
+
+test("uses keyed client digests for shared limits and fails closed when PostgreSQL is unavailable", async (context) => {
+  const clientKeys: string[] = [];
+  const app = createApp({
+    analysisService: null,
+    sessionRepository: null,
+    rateLimitStore: {
+      async consume(_scope, clientKey) {
+        clientKeys.push(clientKey);
+        return { allowed: true, remaining: 4, retryAfterSeconds: 60 };
+      },
+    },
+    rateLimitHmacSecret: testRateLimitHmacSecret,
+  });
+  const failingApp = createApp({
+    analysisService: null,
+    sessionRepository: null,
+    rateLimitStore: { async consume() { throw new Error("database details"); } },
+    rateLimitHmacSecret: testRateLimitHmacSecret,
+  });
+  context.after(async () => {
+    await app.close();
+    await failingApp.close();
+  });
+
+  const response = await app.inject({
+    method: "GET",
+    url: "/features",
+    headers: { "x-forwarded-for": "203.0.113.99" },
+  });
+  const liveDespiteStoreFailure = await failingApp.inject({ method: "GET", url: "/health" });
+  const unavailable = await failingApp.inject({ method: "GET", url: "/features" });
+
+  assert.equal(response.statusCode, 200);
+  assert.match(clientKeys[0] ?? "", /^[a-f0-9]{64}$/);
+  assert.equal(clientKeys[0]?.includes("127.0.0.1"), false);
+  assert.equal(
+    clientKeys[0],
+    createHmac("sha256", testRateLimitHmacSecret).update("127.0.0.1").digest("hex"),
+    "untrusted forwarded headers must not influence the rate-limit identity",
+  );
+  assert.equal(liveDespiteStoreFailure.statusCode, 200);
+  assert.equal(unavailable.statusCode, 503);
+  assert.equal(unavailable.json().error.code, "RATE_LIMIT_UNAVAILABLE");
+  assert.equal(unavailable.body.includes("database details"), false);
 });
 
 test("applies a tighter limit to expensive analysis requests", async (context) => {
@@ -389,11 +466,12 @@ test("attaches only the server-extracted layout template to the analysis session
 
 test("requires an explicit secure CORS origin in production and adds safe response headers", async (context) => {
   assert.throws(
-    () => createApp({ analysisService: null, sessionRepository: null, production: true }),
+    () => createApp({ ...productionSecurityOptions, analysisService: null, sessionRepository: null, production: true }),
     /WEB_ORIGIN/,
   );
   assert.throws(
     () => createApp({
+      ...productionSecurityOptions,
       analysisService: null,
       sessionRepository: null,
       production: true,
@@ -404,6 +482,7 @@ test("requires an explicit secure CORS origin in production and adds safe respon
   );
   assert.throws(
     () => createApp({
+      ...productionSecurityOptions,
       analysisService: null,
       sessionRepository: null,
       production: true,
@@ -413,6 +492,7 @@ test("requires an explicit secure CORS origin in production and adds safe respon
     /Resume PDF intake requires a configured layout extraction service and persistent database storage/,
   );
   const app = createApp({
+    ...productionSecurityOptions,
     analysisService: null,
     sessionRepository: null,
     production: true,
@@ -455,6 +535,24 @@ test("rejects an unsafe configured reverse-proxy hop count", () => {
     () => createApp({ analysisService: null, sessionRepository: null, trustedProxyHops: 6 }),
     /TRUST_PROXY_HOPS/,
   );
+});
+
+test("requires explicit production proxy and distributed rate-limit configuration", () => {
+  assert.throws(() => createApp({
+    production: true,
+    webOrigin: "https://curriculus.example",
+    rateLimitHmacSecret: testRateLimitHmacSecret,
+    rateLimitStore: allowRateLimitStore,
+    analysisService: null,
+    sessionRepository: null,
+  }), /TRUST_PROXY_HOPS/);
+  assert.throws(() => createApp({
+    production: true,
+    webOrigin: "https://curriculus.example",
+    trustedProxyHops: 0,
+    analysisService: null,
+    sessionRepository: null,
+  }), /distributed rate limiting/);
 });
 
 test("protects metrics with a strong bearer secret and uses only bounded route labels", async (context) => {

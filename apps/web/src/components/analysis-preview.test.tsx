@@ -61,6 +61,7 @@ test("renders the full diff, requirement context, evidence, and confirmation poi
   );
 
   assert.ok(screen.getByRole("heading", { name: "Revise as sugestões" }));
+  assert.ok(screen.getByRole("note").textContent?.includes("a redação sugerida é uma proposta, não um fato verificado"));
   assert.equal(screen.getAllByText("Trabalhei com Java.").length, 2);
   assert.ok(screen.getByText("Desenvolvi soluções usando Java."));
   assert.ok(screen.getByText("Deixa a experiência relevante mais direta."));

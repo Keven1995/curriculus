@@ -39,7 +39,12 @@ import { DocumentServiceError, type DocumentService } from "./documents/document
 import { createConfiguredDataDeletionService } from "./privacy/configured-data-deletion-service.js";
 import { DataDeletionServiceError, type DataDeletionService } from "./privacy/data-deletion-service.js";
 import { HttpMetrics } from "./security/http-metrics.js";
-import { InMemoryRateLimiter, type RateLimitPolicy } from "./security/in-memory-rate-limiter.js";
+import {
+  InMemoryRateLimiter,
+  type RateLimitDecision,
+  type RateLimitPolicy,
+} from "./security/in-memory-rate-limiter.js";
+import type { DistributedRateLimitStore } from "./security/rate-limit-types.js";
 import {
   isStrongSecret,
   matchesBearerSecret,
@@ -63,7 +68,7 @@ type RateLimitScope =
   | "layoutDelete"
   | "webhook";
 
-type RateLimitRequest = { ip: string };
+type RateLimitRequest = Pick<FastifyRequest, "ip" | "log" | "routeOptions">;
 type RateLimitReply = {
   header(name: string, value: string): unknown;
   status(code: number): { send(payload: unknown): unknown };
@@ -88,6 +93,8 @@ type AppOptions = {
   production?: boolean;
   trustedProxyHops?: number;
   metricsToken?: string | null;
+  rateLimitHmacSecret?: string;
+  rateLimitStore?: DistributedRateLimitStore;
   rateLimitPolicies?: Partial<Record<RateLimitScope, RateLimitPolicy>>;
   logger?: boolean | FastifyLoggerOptions;
   analysisService?: AnalysisService | null;
@@ -146,12 +153,17 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
   if (!Number.isInteger(trustedProxyHops) || trustedProxyHops < 0 || trustedProxyHops > 5) {
     throw new Error("TRUST_PROXY_HOPS must be an integer from 0 to 5.");
   }
+  if (production && options.trustedProxyHops === undefined && configuredProxyHops === undefined) {
+    throw new Error("TRUST_PROXY_HOPS must be explicitly configured in production after validating the proxy chain.");
+  }
   const metricsToken = options.metricsToken === undefined
     ? process.env.METRICS_TOKEN
     : options.metricsToken ?? undefined;
   const metrics = new HttpMetrics();
   const requestStartedAt = new WeakMap<FastifyRequest, number>();
   const analysisDeduplicationSecret = randomBytes(32);
+  const rateLimitHmacSecret = options.rateLimitHmacSecret ?? process.env.RATE_LIMIT_HMAC_SECRET;
+  let distributedRateLimitStore: DistributedRateLimitStore | undefined = options.rateLimitStore;
   const analysesInFlight = new Map<string, Promise<{
     result: Awaited<ReturnType<AnalysisService["analyze"]>>;
     session: Awaited<ReturnType<SessionRepository["createSession"]>> | null;
@@ -166,8 +178,28 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
     request: RateLimitRequest,
     reply: RateLimitReply,
   ) => Promise<void> => async (request, reply) => {
+    // Liveness must remain available when the database-backed limiter is unavailable.
+    if (scope === "global" && request.routeOptions.url === "/health") return;
     const policy = rateLimitPolicies[scope];
-    const decision = rateLimiter.consume(scope, request.ip, policy);
+    let decision: RateLimitDecision;
+    try {
+      decision = distributedRateLimitStore
+        ? await distributedRateLimitStore.consume(
+          scope,
+          createHmac("sha256", rateLimitHmacSecret!).update(request.ip).digest("hex"),
+          policy,
+        )
+        : rateLimiter.consume(scope, request.ip, policy);
+    } catch {
+      request.log.error({ event: "rate_limit_store_unavailable", scope }, "Rate limit storage unavailable");
+      await reply.status(503).send({
+        error: {
+          code: "RATE_LIMIT_UNAVAILABLE",
+          message: "O serviço está temporariamente indisponível. Tente novamente mais tarde.",
+        },
+      });
+      return;
+    }
     reply.header("x-ratelimit-limit", String(policy.limit));
     reply.header("x-ratelimit-remaining", String(decision.remaining));
     reply.header("x-ratelimit-reset", String(Math.ceil(Date.now() / 1_000) + decision.retryAfterSeconds));
@@ -191,6 +223,17 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
     options.sessionRepository === undefined
       ? createConfiguredSessionRepository()
       : options.sessionRepository ?? undefined;
+  if (!distributedRateLimitStore && sessionRepository?.consumeDistributedRateLimit && isStrongSecret(rateLimitHmacSecret)) {
+    distributedRateLimitStore = {
+      consume: sessionRepository.consumeDistributedRateLimit.bind(sessionRepository),
+    };
+  }
+  if (distributedRateLimitStore && !isStrongSecret(rateLimitHmacSecret)) {
+    throw new Error("RATE_LIMIT_HMAC_SECRET must be a strong secret when distributed rate limiting is enabled.");
+  }
+  if (production && !distributedRateLimitStore) {
+    throw new Error("Production requires PostgreSQL-backed distributed rate limiting and RATE_LIMIT_HMAC_SECRET.");
+  }
   const resumeLayoutService = options.resumeLayoutService === undefined
     ? sessionRepository
       ? new ResumeLayoutService(sessionRepository, Date.now, (durationMs) => metrics.recordStage("extraction", durationMs))
@@ -313,15 +356,25 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
         app.log.warn({ event: "resume_layout_expiry_cleanup_failed" }, "Temporary resume layout cleanup failed");
       }
     };
+    const cleanupExpiredRateLimitBuckets = async () => {
+      if (!sessionRepository.deleteExpiredRateLimitBuckets) return;
+      try {
+        await sessionRepository.deleteExpiredRateLimitBuckets();
+      } catch {
+        app.log.warn({ event: "rate_limit_cleanup_failed" }, "Rate limit cleanup failed");
+      }
+    };
 
     app.addHook("onReady", async () => {
       await cleanupExpiredSessions();
       await cleanupExpiredDocuments();
       await cleanupExpiredResumeLayouts();
+      await cleanupExpiredRateLimitBuckets();
       cleanupTimer = setInterval(() => {
         void cleanupExpiredSessions();
         void cleanupExpiredDocuments();
         void cleanupExpiredResumeLayouts();
+        void cleanupExpiredRateLimitBuckets();
       }, 15 * 60 * 1000);
       cleanupTimer.unref();
     });
@@ -381,6 +434,17 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
   );
 
   app.get("/health", async () => ({ status: "ok", service: "curriculus-api" }));
+
+  app.get("/ready", async (_request, reply) => {
+    try {
+      if (!sessionRepository || !distributedRateLimitStore || !(await sessionRepository.isReady())) {
+        return reply.status(503).send({ status: "not_ready" });
+      }
+      return reply.send({ status: "ready" });
+    } catch {
+      return reply.status(503).send({ status: "not_ready" });
+    }
+  });
 
   app.get("/metrics", async (request, reply) => {
     if (!isStrongSecret(metricsToken) || !matchesBearerSecret(metricsToken, request.headers.authorization)) {

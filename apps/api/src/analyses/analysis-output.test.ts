@@ -53,6 +53,7 @@ test("normalizes case and PDF whitespace while returning literal source text and
     suggestions: [{
       ...validOutput.suggestions[0],
       originalText: "atendimento por telefone com excel avançado.",
+      suggestedText: "Atendimento por telefone usando Excel avançado.",
       sourceFacts: ["EXCEL    AVANÇADO"],
     }],
   };
@@ -116,6 +117,56 @@ test("drops an unsupported suggestion without discarding supported suggestions",
   }
 });
 
+test("omits job-alignment rewrites that add unsupported metrics, leadership, credentials, or named tools", () => {
+  const fabricatedSuggestions = [
+    {
+      ...validOutput.suggestions[0],
+      id: "invented-metric",
+      suggestedText: "Reduzi custos em 30% com Java e APIs REST.",
+    },
+    {
+      ...validOutput.suggestions[0],
+      id: "invented-leadership",
+      suggestedText: "Liderei uma equipe de 12 pessoas usando Java e APIs REST.",
+    },
+    {
+      ...validOutput.suggestions[0],
+      id: "invented-credential-and-tool",
+      suggestedText: "Trabalhei com certificação AWS e APIs REST usando Java.",
+    },
+    {
+      ...validOutput.suggestions[0],
+      id: "invented-employer",
+      suggestedText: "Desenvolvi APIs REST para Google com Java.",
+    },
+  ];
+
+  const result = parseAnalysisOutput({
+    ...validOutput,
+    suggestions: fabricatedSuggestions,
+    documentStructure: { sectionOrder: [], suggestionOrder: [] },
+  }, resume);
+
+  assert.equal(result.success, true);
+  if (result.success) assert.deepEqual(result.data.suggestions, []);
+});
+
+test("keeps high-risk claims when their metric, role, credential, and tool are present in the resume", () => {
+  const sourceResume = "Liderei 5 pessoas com certificação AWS em Java.";
+  const result = parseAnalysisOutput({
+    ...validOutput,
+    suggestions: [{
+      ...validOutput.suggestions[0],
+      originalText: sourceResume,
+      suggestedText: "Liderei 5 pessoas com certificação AWS usando Java.",
+      sourceFacts: ["Java", "AWS"],
+    }],
+  }, sourceResume);
+
+  assert.equal(result.success, true);
+  if (result.success) assert.equal(result.data.suggestions.length, 1);
+});
+
 test("accepts a proofreading correction without linking it to job requirements or facts", () => {
   const sourceResume = "Tenho experiencia com documentacao tecnica.";
   const result = parseAnalysisOutput({
@@ -144,6 +195,28 @@ test("accepts a proofreading correction without linking it to job requirements o
     assert.deepEqual(result.data.suggestions[0]?.relatedRequirementIds, []);
     assert.deepEqual(result.data.suggestions[0]?.sourceFacts, []);
   }
+});
+
+test("does not let a proofreading label bypass the unsupported-claim guard", () => {
+  const sourceResume = "Experiência com Java.";
+  const result = parseAnalysisOutput({
+    jobRequirements: [],
+    suggestions: [{
+      id: "proofreading-invention",
+      category: "proofreading",
+      section: "Revisão ortográfica",
+      originalText: sourceResume,
+      suggestedText: "Experiência com Java e certificação AWS.",
+      relatedRequirementIds: [],
+      rationale: "Corrige a redação.",
+      sourceFacts: [],
+      pointsToConfirm: [],
+    }],
+    documentStructure: { sectionOrder: [], suggestionOrder: [] },
+  }, sourceResume);
+
+  assert.equal(result.success, true);
+  if (result.success) assert.equal(result.data.suggestions.length, 0);
 });
 
 test("omits ambiguous and overlapping suggestions individually", () => {

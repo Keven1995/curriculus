@@ -64,6 +64,45 @@ test("requires the temporary layout table to be available before reporting readi
 
   assert.equal(await repository.isReady(), true);
   assert.match(database.calls[1]!.sql, /SELECT id, template, expires_at FROM temporary_resume_layouts LIMIT 0/);
+  assert.match(database.calls[3]!.sql, /SELECT scope, client_hash, window_ms, expires_at, request_count FROM rate_limit_buckets LIMIT 0/);
+});
+
+test("consumes shared limits atomically using only a keyed client digest", async () => {
+  const database = new FakeDatabase();
+  database.result = { rows: [{ request_count: 2, retry_after_seconds: 37 }], rowCount: 1 };
+  const repository = new PostgresSessionRepository(database);
+  const clientDigest = "a".repeat(64);
+
+  const allowed = await repository.consumeDistributedRateLimit("analysis", clientDigest, {
+    limit: 2,
+    windowMs: 60_000,
+  });
+  assert.deepEqual(allowed, { allowed: true, remaining: 0, retryAfterSeconds: 37 });
+  assert.match(database.calls[0]!.sql, /ON CONFLICT \(scope, client_hash, window_ms, window_started_at\)/);
+  assert.match(database.calls[0]!.sql, /LEAST\(\$4, rate_limit_buckets\.request_count \+ 1\)/);
+  assert.deepEqual(database.calls[0]!.values, ["analysis", clientDigest, 60_000, 3]);
+  assert.equal(database.calls[0]!.values.includes("192.0.2.10"), false);
+
+  database.result = { rows: [{ request_count: 3, retry_after_seconds: 20 }], rowCount: 1 };
+  const denied = await repository.consumeDistributedRateLimit("analysis", clientDigest, {
+    limit: 2,
+    windowMs: 60_000,
+  });
+  assert.deepEqual(denied, { allowed: false, remaining: 0, retryAfterSeconds: 20 });
+});
+
+test("rejects non-digest client keys and bounds expiry cleanup", async () => {
+  const database = new FakeDatabase();
+  const repository = new PostgresSessionRepository(database);
+
+  await assert.rejects(
+    repository.consumeDistributedRateLimit("analysis", "192.0.2.10", { limit: 1, windowMs: 1_000 }),
+    /HMAC digests/,
+  );
+  database.result = { rows: [], rowCount: 3 };
+  assert.equal(await repository.deleteExpiredRateLimitBuckets(), 3);
+  assert.match(database.calls[0]!.sql, /LIMIT 5000[\s\S]*FOR UPDATE SKIP LOCKED/);
+  assert.match(database.calls[0]!.sql, /expires_at <= clock_timestamp\(\)/);
 });
 
 test("creates a temporary analysis session with a database-generated expiration", async () => {
@@ -535,6 +574,10 @@ test("creates the required Neon schema and foreign-key retention behavior", asyn
     new URL("../../migrations/004_document_layout_fallback.sql", import.meta.url),
     "utf8",
   );
+  const rateLimitMigration = await readFile(
+    new URL("../../migrations/006_distributed_rate_limits.sql", import.meta.url),
+    "utf8",
+  );
 
   assert.match(migration, /CREATE TABLE IF NOT EXISTS analysis_sessions/);
   assert.match(migration, /CREATE TABLE IF NOT EXISTS orders/);
@@ -548,4 +591,7 @@ test("creates the required Neon schema and foreign-key retention behavior", asyn
   assert.match(layoutMigration, /ADD COLUMN IF NOT EXISTS resume_layout_template jsonb/);
   assert.match(layoutMigration, /resume_layout_template IS NULL/);
   assert.match(fallbackMigration, /document_layout_fallback boolean NOT NULL DEFAULT false/);
+  assert.match(rateLimitMigration, /CREATE TABLE IF NOT EXISTS rate_limit_buckets/);
+  assert.match(rateLimitMigration, /client_hash char\(64\)/);
+  assert.match(rateLimitMigration, /rate_limit_buckets_expires_at_idx/);
 });

@@ -1685,6 +1685,11 @@
     padding: 51px 0 78px;
   }
 
+  .hero::before {
+    right: 0;
+    width: 100%;
+  }
+
   .hero h1 {
     max-width: 620px;
     font-size: clamp(43px, 10vw, 60px);
@@ -1693,6 +1698,10 @@
   .heroVisual {
     max-width: 500px;
     justify-self: center;
+  }
+
+  .visualOrbit {
+    display: none;
   }
 
   .formSection {

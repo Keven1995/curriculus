@@ -533,6 +533,11 @@ test("extracts text and layout in one production API request, then keeps layout 
   });
   const makeApp = (service: ResumeLayoutService) => createApp({
     production: true,
+    trustedProxyHops: 0,
+    rateLimitHmacSecret: "test-rate-limit-secret-with-at-least-32-bytes",
+    rateLimitStore: {
+      async consume() { return { allowed: true, remaining: 100, retryAfterSeconds: 60 }; },
+    },
     webOrigin: "https://curriculus.example",
     resumeLayoutService: service,
     resumeLayoutImportEnabled: true,

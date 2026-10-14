@@ -1,13 +1,6 @@
-export type RateLimitPolicy = {
-  limit: number;
-  windowMs: number;
-};
+import type { RateLimitDecision, RateLimitPolicy } from "./rate-limit-types.js";
 
-export type RateLimitDecision = {
-  allowed: boolean;
-  remaining: number;
-  retryAfterSeconds: number;
-};
+export type { RateLimitDecision, RateLimitPolicy } from "./rate-limit-types.js";
 
 type Bucket = {
   startedAt: number;
