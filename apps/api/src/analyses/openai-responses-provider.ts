@@ -1,4 +1,7 @@
-import { AnalysisProviderError } from "./analysis-errors.js";
+import {
+  AnalysisProviderError,
+  type AnalysisProviderFailureReason,
+} from "./analysis-errors.js";
 
 export type GenerateAnalysisRequest = {
   instructions: string;
@@ -32,6 +35,82 @@ function usageCount(value: unknown): number | undefined {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
     ? value
     : undefined;
+}
+
+const quotaErrorCodes = new Set([
+  "insufficient_quota",
+  "billing_hard_limit_reached",
+  "billing_not_active",
+]);
+const rateLimitErrorCodes = new Set(["rate_limit_exceeded"]);
+const modelErrorCodes = new Set([
+  "model_not_found",
+  "model_not_available",
+  "unsupported_model",
+]);
+
+function safeErrorCode(value: unknown): string | undefined {
+  return typeof value === "string" && /^[a-z0-9_-]{1,64}$/i.test(value)
+    ? value.toLowerCase()
+    : undefined;
+}
+
+function safeRequestId(value: string | null): string | undefined {
+  const requestId = value?.trim();
+  return requestId && /^[a-z0-9_-]{1,100}$/i.test(requestId) ? requestId : undefined;
+}
+
+function classifyHttpFailure(
+  status: number,
+  code?: string,
+  type?: string,
+): AnalysisProviderFailureReason {
+  if (code === "invalid_api_key" || status === 401) return "authentication_failed";
+  if (quotaErrorCodes.has(code ?? "") || type === "insufficient_quota") return "quota_exhausted";
+  if (code === "permission_denied" || type === "permission_error" || status === 403) {
+    return "permission_denied";
+  }
+  if (rateLimitErrorCodes.has(code ?? "") || type === "rate_limit_error" || status === 429) {
+    return "rate_limited";
+  }
+  if (modelErrorCodes.has(code ?? "") || status === 404) return "model_unavailable";
+  if (status >= 500) return "provider_server_error";
+  return "request_rejected";
+}
+
+async function providerHttpError(response: Response): Promise<AnalysisProviderError> {
+  let code: string | undefined;
+  let type: string | undefined;
+  try {
+    const body: unknown = await response.json();
+    if (isRecord(body) && isRecord(body.error)) {
+      code = safeErrorCode(body.error.code);
+      type = safeErrorCode(body.error.type);
+    }
+  } catch {
+    // The diagnostic intentionally falls back to the HTTP status only.
+  }
+
+  const requestId = safeRequestId(response.headers.get("x-request-id"));
+  return new AnalysisProviderError({
+    reason: classifyHttpFailure(response.status, code, type),
+    httpStatus: response.status,
+    ...(requestId ? { requestId } : {}),
+  });
+}
+
+function isTimeout(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "name" in error &&
+    (error.name === "TimeoutError" || error.name === "AbortError");
+}
+
+function invalidProviderResponse(response: Response): AnalysisProviderError {
+  const requestId = safeRequestId(response.headers.get("x-request-id"));
+  return new AnalysisProviderError({
+    reason: "invalid_provider_response",
+    httpStatus: response.status,
+    ...(requestId ? { requestId } : {}),
+  });
 }
 
 function extractOutputText(response: unknown): string | undefined {
@@ -91,30 +170,30 @@ export class OpenAIResponsesProvider implements AnalysisProvider {
         }),
         signal: AbortSignal.timeout(this.timeoutMs),
       });
-    } catch {
-      throw new AnalysisProviderError();
+    } catch (error) {
+      throw new AnalysisProviderError({ reason: isTimeout(error) ? "timeout" : "network_error" });
     }
 
     if (!response.ok) {
-      throw new AnalysisProviderError();
+      throw await providerHttpError(response);
     }
 
     let body: unknown;
     try {
       body = await response.json();
     } catch {
-      throw new AnalysisProviderError();
+      throw invalidProviderResponse(response);
     }
 
     const outputText = extractOutputText(body);
     if (!outputText || !isRecord(body) || !isRecord(body.usage)) {
-      throw new AnalysisProviderError();
+      throw invalidProviderResponse(response);
     }
 
     const inputTokens = usageCount(body.usage.input_tokens);
     const outputTokens = usageCount(body.usage.output_tokens);
     if (inputTokens === undefined || outputTokens === undefined) {
-      throw new AnalysisProviderError();
+      throw invalidProviderResponse(response);
     }
 
     return { outputText, inputTokens, outputTokens };

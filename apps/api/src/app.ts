@@ -1,5 +1,9 @@
 import cors from "@fastify/cors";
-import Fastify, { LogController, type FastifyInstance } from "fastify";
+import Fastify, {
+  LogController,
+  type FastifyInstance,
+  type FastifyLoggerOptions,
+} from "fastify";
 import {
   ANALYSIS_REQUEST_LIMITS,
   validateAnalysisRequest,
@@ -73,7 +77,7 @@ type AppOptions = {
   trustedProxyHops?: number;
   metricsToken?: string | null;
   rateLimitPolicies?: Partial<Record<RateLimitScope, RateLimitPolicy>>;
-  logger?: boolean;
+  logger?: boolean | FastifyLoggerOptions;
   analysisService?: AnalysisService | null;
   sessionRepository?: SessionRepository | null;
   pixPaymentService?: PixPaymentServiceContract | null;
@@ -444,7 +448,20 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
       }
 
       if (error instanceof AnalysisProviderError) {
-        request.log.warn({ event: "analysis_failed", reason: "provider_error" }, "Analysis provider failed");
+        // Keep diagnostics limited to normalized provider metadata; never log the exception,
+        // response body, API key, request payload, résumé, or job description.
+        request.log.warn({
+          event: "analysis_failed",
+          reason: "provider_error",
+          provider: "openai",
+          providerFailure: error.diagnostics.reason,
+          ...(error.diagnostics.httpStatus !== undefined
+            ? { providerStatusCode: error.diagnostics.httpStatus }
+            : {}),
+          ...(error.diagnostics.requestId
+            ? { providerRequestId: error.diagnostics.requestId }
+            : {}),
+        }, "Analysis provider failed");
         return reply.status(502).send({
           error: {
             code: "ANALYSIS_PROVIDER_ERROR",

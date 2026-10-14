@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { AnalysisProviderError } from "./analysis-errors.js";
 import { OpenAIResponsesProvider } from "./openai-responses-provider.js";
 
 function responseWith(text: string, status = "completed") {
@@ -71,6 +72,84 @@ test("does not expose provider response bodies in errors or retry failed calls",
     },
   );
   assert.equal(calls, 1);
+});
+
+test("classifies common OpenAI HTTP failures without retaining provider messages or secrets", async () => {
+  const cases = [
+    { status: 401, code: "invalid_api_key", reason: "authentication_failed" },
+    { status: 429, code: "insufficient_quota", reason: "quota_exhausted" },
+    { status: 429, code: "rate_limit_exceeded", reason: "rate_limited" },
+    { status: 404, code: "model_not_found", reason: "model_unavailable" },
+    { status: 500, code: "internal_error", reason: "provider_server_error" },
+  ] as const;
+
+  for (const scenario of cases) {
+    const provider = new OpenAIResponsesProvider({
+      apiKey: "sk-secret-provider-credential",
+      model: "private-model-name",
+      fetcher: async () => new Response(JSON.stringify({
+        error: {
+          code: scenario.code,
+          message: "PRIVATE_RESUME private-model-name sk-secret-provider-credential",
+        },
+      }), {
+        status: scenario.status,
+        headers: { "content-type": "application/json", "x-request-id": "req_safe-id-123" },
+      }),
+    });
+
+    await assert.rejects(
+      provider.generate({
+        instructions: "instructions",
+        input: "PRIVATE_RESUME",
+        responseSchema: {},
+        maxOutputTokens: 4_000,
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof AnalysisProviderError);
+        assert.equal(error.message.includes("PRIVATE_RESUME"), false);
+        assert.equal(error.message.includes("sk-secret-provider-credential"), false);
+        assert.deepEqual(error.diagnostics, {
+          reason: scenario.reason,
+          httpStatus: scenario.status,
+          requestId: "req_safe-id-123",
+        });
+        return true;
+      },
+    );
+  }
+});
+
+test("maps timeouts and unsafe or unparseable provider error details to bounded diagnostics", async () => {
+  const timeoutProvider = new OpenAIResponsesProvider({
+    apiKey: "test-api-key",
+    model: "test-model",
+    fetcher: async () => { throw new DOMException("sensitive timeout detail", "TimeoutError"); },
+  });
+  await assert.rejects(
+    timeoutProvider.generate({ instructions: "x", input: "secret", responseSchema: {}, maxOutputTokens: 10 }),
+    (error: unknown) => error instanceof AnalysisProviderError && error.diagnostics.reason === "timeout",
+  );
+
+  const malformedErrorProvider = new OpenAIResponsesProvider({
+    apiKey: "test-api-key",
+    model: "test-model",
+    fetcher: async () => new Response("private error body", {
+      status: 429,
+      headers: { "x-request-id": `req_${"x".repeat(120)}` },
+    }),
+  });
+  await assert.rejects(
+    malformedErrorProvider.generate({ instructions: "x", input: "secret", responseSchema: {}, maxOutputTokens: 10 }),
+    (error: unknown) => {
+      assert.ok(error instanceof AnalysisProviderError);
+      assert.equal(error.diagnostics.reason, "rate_limited");
+      assert.equal(error.diagnostics.httpStatus, 429);
+      assert.equal(error.diagnostics.requestId, undefined);
+      assert.equal(error.message.includes("private error body"), false);
+      return true;
+    },
+  );
 });
 
 test("rejects incomplete responses and reports no generated text", async () => {

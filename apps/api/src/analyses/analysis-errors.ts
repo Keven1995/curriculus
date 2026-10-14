@@ -22,8 +22,27 @@ export class InvalidAnalysisOutputError extends Error {
   }
 }
 
+export type AnalysisProviderFailureReason =
+  | "authentication_failed"
+  | "quota_exhausted"
+  | "rate_limited"
+  | "model_unavailable"
+  | "permission_denied"
+  | "request_rejected"
+  | "provider_server_error"
+  | "network_error"
+  | "timeout"
+  | "invalid_provider_response"
+  | "unknown";
+
+export type AnalysisProviderDiagnostics = {
+  reason: AnalysisProviderFailureReason;
+  httpStatus?: number;
+  requestId?: string;
+};
+
 export class AnalysisProviderError extends Error {
-  constructor() {
+  constructor(readonly diagnostics: AnalysisProviderDiagnostics = { reason: "unknown" }) {
     super("O provedor de análise não pôde concluir a solicitação.");
     this.name = "AnalysisProviderError";
   }

@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
+import { Writable } from "node:stream";
 import test from "node:test";
 import { createApp } from "./app.js";
+import { AnalysisProviderError } from "./analyses/analysis-errors.js";
 import { PixPaymentError } from "./payments/payment-errors.js";
 import { PaymentWebhookError } from "./payments/payment-webhook-service.js";
 import { DocumentServiceError } from "./documents/document-service.js";
@@ -653,6 +655,53 @@ test("reports unavailable configuration without echoing the submitted content", 
   assert.equal(response.statusCode, 503);
   assert.equal(response.json().error.code, "ANALYSIS_NOT_CONFIGURED");
   assert.equal(response.body.includes(validRequest.resume), false);
+});
+
+test("logs safe provider diagnostics while keeping secrets and submitted text out of logs and responses", async (context) => {
+  const logLines: string[] = [];
+  const logStream = new Writable({
+    write(chunk, _encoding, callback) {
+      logLines.push(String(chunk));
+      callback();
+    },
+  });
+  const app = createApp({
+    logger: { level: "warn", stream: logStream },
+    analysisService: {
+      async analyze() {
+        throw new AnalysisProviderError({
+          reason: "authentication_failed",
+          httpStatus: 401,
+          requestId: "req_safe-id-123",
+        });
+      },
+    },
+    sessionRepository: { async isReady() { return true; } } as never,
+  });
+  context.after(() => app.close());
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/analyses",
+    payload: {
+      jobDescription: "PRIVATE_JOB_DESCRIPTION",
+      resume: "PRIVATE_RESUME_CONTENT",
+      dataNoticeAcknowledged: true,
+    },
+  });
+  const logs = logLines.join("");
+
+  assert.equal(response.statusCode, 502);
+  assert.deepEqual(response.json().error, {
+    code: "ANALYSIS_PROVIDER_ERROR",
+    message: "Não foi possível concluir a análise. Tente novamente mais tarde.",
+  });
+  assert.match(logs, /"providerFailure":"authentication_failed"/);
+  assert.match(logs, /"providerStatusCode":401/);
+  assert.match(logs, /"providerRequestId":"req_safe-id-123"/);
+  assert.equal(logs.includes("PRIVATE_JOB_DESCRIPTION"), false);
+  assert.equal(logs.includes("PRIVATE_RESUME_CONTENT"), false);
+  assert.equal(response.body.includes("authentication_failed"), false);
 });
 
 test("runs the injected analysis service exactly once", async (context) => {
