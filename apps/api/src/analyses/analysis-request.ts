@@ -2,7 +2,7 @@ export const ANALYSIS_REQUEST_LIMITS = {
   jobUrl: 2_048,
   jobDescription: 60_000,
   resume: 80_000,
-  bodyBytes: 256 * 1024,
+  bodyBytes: 640 * 1024,
 } as const;
 
 export type AnalysisRequest = {

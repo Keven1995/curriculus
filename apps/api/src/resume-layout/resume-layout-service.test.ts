@@ -7,6 +7,8 @@ import { createApp } from "../app.js";
 import { extractPdfLayout } from "./pdf-layout-extractor.js";
 import { ResumeLayoutError } from "./resume-layout-errors.js";
 import { ResumeLayoutService } from "./resume-layout-service.js";
+import type { ResumeLayoutTemplateStore } from "./resume-layout-store.js";
+import type { ResumeLayoutTemplate } from "./resume-layout-types.js";
 import { renderLayoutTextResumePdf } from "./layout-text-pdf-renderer.js";
 
 async function createReferencePdf(includeText = true): Promise<Buffer> {
@@ -26,6 +28,51 @@ async function createReferencePdf(includeText = true): Promise<Buffer> {
   return ended;
 }
 
+async function createTwoColumnResumePdf(): Promise<Buffer> {
+  const document = new PDFDocument({ size: "A4", margin: 0 });
+  const chunks: Buffer[] = [];
+  document.on("data", (chunk: Buffer) => chunks.push(chunk));
+  const ended = once(document, "end").then(() => Buffer.concat(chunks));
+  document.font("Helvetica").fontSize(11).text("Trabalhei com Java para construir", 24, 60, { width: 135 });
+  document.font("Helvetica").fontSize(11).text("APIs REST.", 24, 78, { width: 135 });
+  document.font("Helvetica").fontSize(11).text("Tenho experiencia com", 212, 60, { width: 340 });
+  document.font("Helvetica").fontSize(11).text("documentacao tecnica.", 212, 78, { width: 340 });
+  document.end();
+  return ended;
+}
+
+class MemoryResumeLayoutStore implements ResumeLayoutTemplateStore {
+  private readonly templates = new Map<string, { template: ResumeLayoutTemplate; expiresAt: Date }>();
+
+  constructor(private readonly now: () => number = Date.now) {}
+
+  async storeTemporaryResumeLayout(templateId: string, template: ResumeLayoutTemplate): Promise<Date> {
+    const expiresAt = new Date(this.now() + 24 * 60 * 60_000);
+    this.templates.set(templateId, { template: structuredClone(template), expiresAt });
+    return expiresAt;
+  }
+
+  async findTemporaryResumeLayout(templateId: string): Promise<ResumeLayoutTemplate | null> {
+    const stored = this.templates.get(templateId);
+    if (!stored || stored.expiresAt.getTime() <= this.now()) return null;
+    return structuredClone(stored.template);
+  }
+
+  async deleteTemporaryResumeLayout(templateId: string): Promise<boolean> {
+    return this.templates.delete(templateId);
+  }
+
+  async deleteExpiredTemporaryResumeLayouts(): Promise<number> {
+    let deleted = 0;
+    for (const [id, stored] of this.templates) {
+      if (stored.expiresAt.getTime() > this.now()) continue;
+      this.templates.delete(id);
+      deleted += 1;
+    }
+    return deleted;
+  }
+}
+
 test("extracts bounded technical text/layout JSON and detects headings without retaining the source PDF", async () => {
   const bytes = await createReferencePdf();
   const extracted = await extractPdfLayout(bytes, "C:\\private\\referencia.pdf");
@@ -38,6 +85,8 @@ test("extracts bounded technical text/layout JSON and detects headings without r
   assert.ok(extracted.rawExtraction.pages[0]!.text_blocks.length >= 3);
   assert.ok(extracted.rawExtraction.pages[0]!.text_blocks.some((block) => block.text.includes("NOME DA")));
   assert.ok(extracted.rawExtraction.pages[0]!.text_blocks.some((block) => block.text.includes("REFERÊNCIA")));
+  assert.equal(extracted.resumeText, "NOME DA\nREFERÊNCIA\nPERFIL PROFISSIONAL\nExperiência com conteúdo de exemplo\nFORMAÇÃO");
+  assert.equal(extracted.layoutAvailable, true);
   assert.ok(extracted.detectedSections.some((section) => section.label === "Formação"));
   assert.equal(extracted.template.id, "sidebar-dark-header-color-v1");
   assert.equal(extracted.template.palette.sidebar, "#354550");
@@ -70,25 +119,33 @@ test("rejects invalid, scanned, oversized and over-paginated reference PDFs safe
   );
 });
 
-test("caches only a reusable visual template briefly after extracting the reference", async () => {
+test("detects separate columns even when both columns have text on the same baselines", async () => {
+  const extracted = await extractPdfLayout(await createTwoColumnResumePdf(), "two-column.pdf");
+
+  assert.equal(extracted.template.detection.detectedColumns, 2);
+  assert.equal(extracted.layoutAvailable, true);
+  assert.equal(extracted.resumeText.replace(/\s+/gu, " ").trim(), "Trabalhei com Java para construir APIs REST. Tenho experiencia com documentacao tecnica.");
+});
+
+test("retains only the visual template across service restarts and expires it after 24 hours", async () => {
   let now = Date.now();
-  const service = new ResumeLayoutService(() => now);
+  const store = new MemoryResumeLayoutStore(() => now);
+  const service = new ResumeLayoutService(store, () => now);
   const referencePdf = await createReferencePdf();
   const imported = await service.importPdf(referencePdf, "reference.pdf");
-  const cached = await service.importPdf(referencePdf, "renamed-reference.pdf");
-  assert.equal(cached.templateId, imported.templateId);
-  assert.deepEqual(service.getTemplate(imported.templateId), imported.template);
-  assert.equal(service.deleteTemplate(imported.templateId), true);
-  assert.equal(service.getTemplate(imported.templateId), undefined);
-  const afterDelete = await service.importPdf(referencePdf, "reference.pdf");
-  now += 31 * 60_000;
-  assert.equal(service.getTemplate(afterDelete.templateId), undefined);
+  assert.deepEqual(await service.getTemplate(imported.templateId), imported.template);
+
+  const restartedService = new ResumeLayoutService(store, () => now);
+  assert.deepEqual(await restartedService.getTemplate(imported.templateId), imported.template);
+  now += 24 * 60 * 60_000 + 1;
+  assert.equal(await restartedService.getTemplate(imported.templateId), null);
+  assert.equal(await store.deleteExpiredTemporaryResumeLayouts(), 1);
 });
 
 test("renders the approved resume text in the extracted visual style with complete pagination", async () => {
-  const service = new ResumeLayoutService();
+  const service = new ResumeLayoutService(new MemoryResumeLayoutStore());
   const imported = await service.importPdf(await createReferencePdf(), "reference.pdf");
-  const template = service.getTemplate(imported.templateId)!;
+  const template = (await service.getTemplate(imported.templateId))!;
   const longSummary = `${"Novo conteúdo profissional com experiência comprovada e resultados mensuráveis. ".repeat(55)}FIM DO RESUMO NOVO`;
   const finalResume = [
     "Pessoa Nova",
@@ -110,6 +167,7 @@ test("renders the approved resume text in the extracted visual style with comple
   const rendered = await pdfjs.getDocument({
     data: new Uint8Array(pdf),
     isEvalSupported: false,
+    useSystemFonts: true,
     standardFontDataUrl,
   }).promise;
   try {
@@ -118,12 +176,9 @@ test("renders the approved resume text in the extracted visual style with comple
     for (let pageNumber = 1; pageNumber <= rendered.numPages; pageNumber += 1) {
       const page = await rendered.getPage(pageNumber);
       const content = await page.getTextContent();
-      generatedText += content.items.map((item) => "str" in item ? item.str : "").join(" ");
+      generatedText += `${content.items.map((item) => "str" in item ? item.str : "").join(" ")} `;
     }
-    assert.match(generatedText, /PESSOA NOVA/);
-    assert.match(generatedText, /FIM DO\s+RESUMO NOVO/);
-    assert.match(generatedText, /Empresa Nova/);
-    assert.match(generatedText, /pessoa@example\.test/);
+    assert.equal(generatedText.replace(/\s+/gu, " ").trim(), finalResume.replace(/\s+/gu, " ").trim());
     assert.doesNotMatch(generatedText, /NOME DA REFERÊNCIA|Experiência com conteúdo de exemplo/);
   } finally {
     await rendered.destroy();
@@ -131,12 +186,24 @@ test("renders the approved resume text in the extracted visual style with comple
 
 });
 
-test("integrates PDF import with the existing analysis session instead of a separate renderer route", async (context) => {
-  const service = new ResumeLayoutService();
+test("extracts text and layout in one production API request, then keeps layout only in the analysis session", async (context) => {
+  const store = new MemoryResumeLayoutStore();
   let savedTemplate: unknown;
-  const app = createApp({
-    localTestMode: true,
+  const repository = Object.assign(store, {
+    async isReady() { return true; },
+    async createSessionWithTemporaryLayout(_input: unknown, templateId: string) {
+      const template = await store.findTemporaryResumeLayout(templateId);
+      if (!template) return null;
+      savedTemplate = template;
+      await store.deleteTemporaryResumeLayout(templateId);
+      return { id: "layout-session", createdAt: new Date(), expiresAt: new Date(Date.now() + 24 * 60 * 60_000) };
+    },
+  });
+  const makeApp = (service: ResumeLayoutService) => createApp({
+    production: true,
+    webOrigin: "https://curriculus.example",
     resumeLayoutService: service,
+    resumeLayoutImportEnabled: true,
     analysisService: {
       async analyze() {
         return {
@@ -145,43 +212,55 @@ test("integrates PDF import with the existing analysis session instead of a sepa
         };
       },
     },
-    sessionRepository: {
-      async isReady() { return true; },
-      async createSession(input) {
-        savedTemplate = input.resumeLayoutTemplate;
-        return { id: "layout-session", createdAt: new Date(), expiresAt: new Date(Date.now() + 60_000) };
-      },
-    } as never,
+    sessionRepository: repository as never,
   });
-  context.after(() => app.close());
+  const importApp = makeApp(new ResumeLayoutService(repository));
+  let analysisApp: ReturnType<typeof makeApp> | undefined;
+  context.after(async () => {
+    await importApp.close();
+    await analysisApp?.close();
+  });
 
-  const imported = await app.inject({
+  const referenceBytes = await createReferencePdf();
+  const largePdfPayload = Buffer.concat([referenceBytes, Buffer.alloc(700 * 1024, 0x20)]);
+  assert.ok(largePdfPayload.length > 640 * 1024);
+  const imported = await importApp.inject({
     method: "POST",
     url: "/resume-layouts/import",
-    headers: { "content-type": "application/pdf", "x-file-name": "referencia.pdf" },
-    payload: await createReferencePdf(),
+    headers: { origin: "https://curriculus.example", "content-type": "application/pdf", "x-file-name": "referencia.pdf" },
+    payload: largePdfPayload,
   });
   assert.equal(imported.statusCode, 201);
   const importedBody = imported.json();
   assert.equal("rawExtraction" in importedBody, false);
-  const analyzed = await app.inject({
+  assert.equal("template" in importedBody, false);
+  assert.equal(importedBody.layoutAvailable, true);
+  assert.ok(String(importedBody.resumeText).includes("Experiência com conteúdo de exemplo"));
+  await importApp.close();
+
+  // A new service instance models an API restart between upload and analysis.
+  const analysisService = new ResumeLayoutService(repository);
+  analysisApp = makeApp(analysisService);
+  const analyzed = await analysisApp.inject({
     method: "POST",
     url: "/analyses",
     payload: {
       jobDescription: "Vaga fictícia",
-      resume: "Texto fictício novo",
+      resume: importedBody.resumeText,
       dataNoticeAcknowledged: true,
       resumeLayoutTemplateId: importedBody.templateId,
     },
   });
   assert.equal(analyzed.statusCode, 201);
   assert.equal(analyzed.json().usesReferenceLayout, true);
-  assert.deepEqual(savedTemplate, importedBody.template);
+  assert.ok(savedTemplate);
+  assert.equal((savedTemplate as { id?: string }).id, "sidebar-dark-header-color-v1");
+  assert.equal(await analysisService.getTemplate(importedBody.templateId), null);
 
-  const deleted = await app.inject({
+  const deleted = await analysisApp.inject({
     method: "DELETE",
     url: `/resume-layouts/${importedBody.templateId}`,
   });
   assert.equal(deleted.statusCode, 204);
-  assert.equal((await app.inject({ method: "POST", url: "/resumes/render", payload: {} })).statusCode, 404);
+  assert.equal((await analysisApp.inject({ method: "POST", url: "/resumes/render", payload: {} })).statusCode, 404);
 });

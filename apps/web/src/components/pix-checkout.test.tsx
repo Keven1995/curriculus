@@ -17,6 +17,8 @@ test("has no automated WCAG A/AA accessibility violations in the Pix checkout", 
     <PixCheckout
       sessionId="session-test-id"
       approvedSuggestionIds={[]}
+      finalResumeText="Currículo de teste."
+      finalResumeAppliedSuggestionIds={[]}
       styles={styles}
       fetcher={async () => new Response()}
     />,
@@ -40,6 +42,8 @@ test("local test mode generates a PDF without requesting or displaying a real Pi
       sessionId="session-test-id"
       localTestMode
       approvedSuggestionIds={["suggestion-test-id"]}
+      finalResumeText="Currículo de teste revisado."
+      finalResumeAppliedSuggestionIds={["suggestion-test-id"]}
       styles={styles}
       apiBaseUrl="http://127.0.0.1:4000"
       fetcher={async (url) => {
@@ -65,4 +69,24 @@ test("local test mode generates a PDF without requesting or displaying a real Pi
   assert.equal(screen.queryByLabelText(/E-mail para o pagamento Pix/), null);
   assert.equal(screen.queryByRole("img", { name: /QR Code Pix/ }), null);
   await waitFor(() => assert.match(screen.getByRole("status").textContent ?? "", /Nenhum pagamento real foi feito/));
+});
+
+test("does not send a PDF request if the editor has not been synchronized with current approvals", () => {
+  let calls = 0;
+  render(
+    <PixCheckout
+      sessionId="session-test-id"
+      localTestMode
+      approvedSuggestionIds={["suggestion-test-id"]}
+      finalResumeText="Currículo de teste."
+      finalResumeAppliedSuggestionIds={[]}
+      styles={styles}
+      fetcher={async () => { calls += 1; return new Response(); }}
+    />,
+  );
+
+  const button = screen.getByRole("button", { name: /Gerar PDF de teste/ }) as HTMLButtonElement;
+  assert.equal(button.disabled, true);
+  assert.match(screen.getByRole("status").textContent ?? "", /aplique novamente as sugestões/i);
+  assert.equal(calls, 0);
 });

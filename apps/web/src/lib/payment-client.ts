@@ -14,6 +14,7 @@ export type FinalDocumentApiResponse = {
   format: "pdf";
   downloadPath: string;
   expiresAt: string;
+  layoutFallback?: boolean;
 };
 
 type PaymentRequestOptions = {
@@ -169,11 +170,16 @@ export async function getPixPaymentStatus(
 async function requestFinalDocument(
   sessionId: string,
   approvedSuggestionIds: readonly string[],
+  finalResumeText: string,
   path: string,
   options: PaymentRequestOptions = {},
 ): Promise<FinalDocumentApiResponse> {
   if (
     !sessionId.trim() ||
+    typeof finalResumeText !== "string" ||
+    !finalResumeText.trim() ||
+    Array.from(finalResumeText).length > 80_000 ||
+    /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(finalResumeText) ||
     approvedSuggestionIds.length > 100 ||
     approvedSuggestionIds.some((id) => typeof id !== "string" || !id.trim()) ||
     new Set(approvedSuggestionIds).size !== approvedSuggestionIds.length
@@ -189,7 +195,7 @@ async function requestFinalDocument(
       {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ approvedSuggestionIds }),
+        body: JSON.stringify({ approvedSuggestionIds, finalResumeText }),
       },
     );
   } catch {
@@ -207,7 +213,8 @@ async function requestFinalDocument(
     payload.downloadPath.length > 2_048 ||
     payload.downloadPath.length === expectedPrefix.length ||
     typeof payload.expiresAt !== "string" ||
-    Number.isNaN(Date.parse(payload.expiresAt))
+    Number.isNaN(Date.parse(payload.expiresAt)) ||
+    (payload.layoutFallback !== undefined && typeof payload.layoutFallback !== "boolean")
   ) {
     throw new PaymentClientError(paymentErrorMessages.INVALID_RESPONSE, "INVALID_RESPONSE");
   }
@@ -217,11 +224,13 @@ async function requestFinalDocument(
 export function createFinalDocument(
   sessionId: string,
   approvedSuggestionIds: readonly string[],
+  finalResumeText: string,
   options: PaymentRequestOptions = {},
 ): Promise<FinalDocumentApiResponse> {
   return requestFinalDocument(
     sessionId,
     approvedSuggestionIds,
+    finalResumeText,
     `/sessions/${encodeURIComponent(sessionId)}/documents`,
     options,
   );
@@ -230,11 +239,13 @@ export function createFinalDocument(
 export function createLocalTestDocument(
   sessionId: string,
   approvedSuggestionIds: readonly string[],
+  finalResumeText: string,
   options: PaymentRequestOptions = {},
 ): Promise<FinalDocumentApiResponse> {
   return requestFinalDocument(
     sessionId,
     approvedSuggestionIds,
+    finalResumeText,
     `/__local-test/sessions/${encodeURIComponent(sessionId)}/documents`,
     options,
   );

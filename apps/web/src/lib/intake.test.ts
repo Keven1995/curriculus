@@ -25,3 +25,13 @@ test("accepts a pasted job description and resume", () => {
 
   assert.deepEqual(errors, {});
 });
+
+test("accepts an uploaded PDF as the resume when text has not yet been extracted", () => {
+  const errors = validateIntake({
+    jobDescription: "Vaga para pessoa desenvolvedora",
+    resume: "",
+    acknowledged: true,
+  }, { resumePdfSelected: true });
+
+  assert.deepEqual(errors, {});
+});

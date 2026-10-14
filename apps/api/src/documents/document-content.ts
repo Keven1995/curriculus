@@ -7,6 +7,21 @@ export class ApprovedSuggestionsError extends Error {
   }
 }
 
+export const FINAL_RESUME_MAX_CHARACTERS = 80_000;
+export const FINAL_RESUME_MAX_BYTES = FINAL_RESUME_MAX_CHARACTERS * 4;
+
+export function validateFinalResumeText(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.replace(/\r\n?/g, "\n");
+  if (
+    !normalized.trim() ||
+    Array.from(normalized).length > FINAL_RESUME_MAX_CHARACTERS ||
+    Buffer.byteLength(normalized, "utf8") > FINAL_RESUME_MAX_BYTES ||
+    /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(normalized)
+  ) return undefined;
+  return normalized;
+}
+
 export function buildFinalResume(
   resume: string,
   analysis: AnalysisOutput,

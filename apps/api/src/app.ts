@@ -31,7 +31,7 @@ import {
 import { verifyMercadoPagoWebhookSignature } from "./payments/mercadopago-webhook-signature.js";
 import { PaymentWebhookError } from "./payments/payment-webhook-service.js";
 import { createConfiguredDocumentService } from "./documents/configured-document-service.js";
-import { validateDocumentRequest } from "./documents/document-request.js";
+import { DOCUMENT_REQUEST_LIMITS, validateDocumentRequest } from "./documents/document-request.js";
 import { DocumentServiceError, type DocumentService } from "./documents/document-service.js";
 import { createConfiguredDataDeletionService } from "./privacy/configured-data-deletion-service.js";
 import { DataDeletionServiceError, type DataDeletionService } from "./privacy/data-deletion-service.js";
@@ -45,7 +45,7 @@ import {
 } from "./security/server-configuration.js";
 import { RESUME_LAYOUT_LIMITS } from "./resume-layout/resume-layout-types.js";
 import { ResumeLayoutError, type ResumeLayoutErrorCode } from "./resume-layout/resume-layout-errors.js";
-import type { ResumeLayoutService } from "./resume-layout/resume-layout-service.js";
+import { ResumeLayoutService } from "./resume-layout/resume-layout-service.js";
 
 type RateLimitScope =
   | "global"
@@ -94,7 +94,8 @@ type AppOptions = {
   documentService?: Pick<DocumentService, "generateDocument" | "downloadDocument" | "deleteExpiredDocuments"> | null;
   dataDeletionService?: Pick<DataDeletionService, "deleteSessionData"> | null;
   localTestMode?: boolean;
-  resumeLayoutService?: Pick<ResumeLayoutService, "importPdf" | "getTemplate" | "discardTextExtraction" | "deleteTemplate" | "clear"> | null;
+  resumeLayoutImportEnabled?: boolean;
+  resumeLayoutService?: Pick<ResumeLayoutService, "importPdf" | "getTemplate" | "deleteTemplate" | "isBackedBy"> | null;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -116,7 +117,7 @@ const resumeLayoutFailures: Record<ResumeLayoutErrorCode, { statusCode: number; 
   no_selectable_text: { statusCode: 422, message: "Não encontramos texto selecionável. O PDF parece digitalizado; OCR não está habilitado." },
   text_too_long: { statusCode: 413, message: "O texto do PDF excede o limite de extração." },
   encrypted_pdf: { statusCode: 422, message: "PDFs protegidos por senha não são compatíveis." },
-  template_expired: { statusCode: 410, message: "A importação expirou. Envie novamente o PDF de referência." },
+  template_expired: { statusCode: 410, message: "O estilo visual não está mais disponível; você pode continuar sem reenviar o PDF." },
   processing_timeout: { statusCode: 408, message: "A extração excedeu o tempo permitido. Tente um PDF menor ou mais simples." },
   render_failed: { statusCode: 500, message: "Não foi possível gerar o PDF. Revise os dados e tente novamente." },
 };
@@ -125,9 +126,6 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
   const production = options.production ?? process.env.NODE_ENV === "production";
   if (production && options.localTestMode) {
     throw new Error("Local test mode must never be enabled in production.");
-  }
-  if (production && options.resumeLayoutService) {
-    throw new Error("Local resume layout import must never be enabled in production.");
   }
   const corsOrigin = resolveCorsOrigin(
     options.webOrigin ?? process.env.WEB_ORIGIN,
@@ -184,6 +182,20 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
     options.sessionRepository === undefined
       ? createConfiguredSessionRepository()
       : options.sessionRepository ?? undefined;
+  const resumeLayoutService = options.resumeLayoutService === undefined
+    ? sessionRepository
+      ? new ResumeLayoutService(sessionRepository)
+      : undefined
+    : options.resumeLayoutService ?? undefined;
+  const resumeLayoutImportEnabled = options.resumeLayoutImportEnabled ?? Boolean(options.localTestMode && resumeLayoutService);
+  const hasDurableResumeLayoutStore = Boolean(
+    sessionRepository &&
+    resumeLayoutService instanceof ResumeLayoutService &&
+    resumeLayoutService.isBackedBy(sessionRepository),
+  );
+  if (production && resumeLayoutImportEnabled && !hasDurableResumeLayoutStore) {
+    throw new Error("Resume PDF intake requires a configured layout extraction service and persistent database storage.");
+  }
   const pixPaymentService =
     options.pixPaymentService === undefined
       ? sessionRepository
@@ -208,7 +220,6 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
         ? createConfiguredDataDeletionService(sessionRepository)
         : undefined
       : options.dataDeletionService ?? undefined;
-  const resumeLayoutService = options.resumeLayoutService ?? undefined;
   const app = Fastify({
     logger: options.logger ?? false,
     bodyLimit: ANALYSIS_REQUEST_LIMITS.bodyBytes,
@@ -217,8 +228,6 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
       : (_address, hop) => hop < trustedProxyHops,
     logController: new LogController({ disableRequestLogging: true }),
   });
-
-  if (resumeLayoutService) app.addHook("onClose", async () => resumeLayoutService.clear());
 
   if (resumeLayoutService) {
     app.addContentTypeParser("application/pdf", {
@@ -232,7 +241,7 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
       ? (origin, callback) => callback(null, origin === corsOrigin)
       : false,
     methods: ["GET", "HEAD", "POST", "DELETE", "OPTIONS"],
-    allowedHeaders: ["authorization", "content-type", "x-request-id", "x-signature"],
+    allowedHeaders: ["authorization", "content-type", "x-file-name", "x-request-id", "x-signature"],
     maxAge: 600,
   });
 
@@ -272,13 +281,25 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
         app.log.warn({ event: "document_expiry_cleanup_failed" }, "Document cleanup failed");
       }
     };
+    const cleanupExpiredResumeLayouts = async () => {
+      try {
+        const deletedCount = await sessionRepository.deleteExpiredTemporaryResumeLayouts();
+        if (deletedCount > 0) {
+          app.log.info({ event: "expired_resume_layouts_deleted", deletedCount }, "Expired temporary resume layouts removed");
+        }
+      } catch {
+        app.log.warn({ event: "resume_layout_expiry_cleanup_failed" }, "Temporary resume layout cleanup failed");
+      }
+    };
 
     app.addHook("onReady", async () => {
       await cleanupExpiredSessions();
       await cleanupExpiredDocuments();
+      await cleanupExpiredResumeLayouts();
       cleanupTimer = setInterval(() => {
         void cleanupExpiredSessions();
         void cleanupExpiredDocuments();
+        void cleanupExpiredResumeLayouts();
       }, 15 * 60 * 1000);
       cleanupTimer.unref();
     });
@@ -410,22 +431,23 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
       });
     }
 
-    let resumeLayoutTemplate: ReturnType<NonNullable<typeof resumeLayoutService>["getTemplate"]>;
+    let hasResumeLayout = false;
     if (validation.data.resumeLayoutTemplateId) {
-      if (!options.localTestMode || !resumeLayoutService) {
+      if (!resumeLayoutImportEnabled || !resumeLayoutService) {
         return reply.status(409).send({
           error: {
             code: "LAYOUT_IMPORT_NOT_AVAILABLE",
-            message: "A preservação de layout está disponível somente no fluxo de teste local.",
+            message: "A extração do PDF não está disponível neste momento.",
           },
         });
       }
-      resumeLayoutTemplate = resumeLayoutService.getTemplate(validation.data.resumeLayoutTemplateId);
+      const resumeLayoutTemplate = await resumeLayoutService.getTemplate(validation.data.resumeLayoutTemplateId);
       if (!resumeLayoutTemplate) {
         return reply.status(410).send({
-          error: { code: "TEMPLATE_EXPIRED", message: "O layout expirou. Envie novamente o PDF de referência." },
+          error: { code: "TEMPLATE_EXPIRED", message: "O estilo visual não está mais disponível; continue sem reenviar o PDF." },
         });
       }
+      hasResumeLayout = true;
     }
 
     if (!validation.data.jobDescription) {
@@ -467,16 +489,23 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
     try {
       const { resumeLayoutTemplateId: _resumeLayoutTemplateId, ...analysisInput } = validation.data;
       const result = await analysisService.analyze(analysisInput);
-      const session = await sessionRepository.createSession({
+      const sessionInput = {
         jobUrl: validation.data.jobUrl,
         jobDescription: validation.data.jobDescription,
         resume: validation.data.resume,
         analysis: result.analysis,
         usage: result.usage,
-        ...(resumeLayoutTemplate ? { resumeLayoutTemplate } : {}),
-      });
-      if (validation.data.resumeLayoutTemplateId) {
-        resumeLayoutService?.discardTextExtraction(validation.data.resumeLayoutTemplateId);
+      };
+      const session = validation.data.resumeLayoutTemplateId
+        ? await sessionRepository.createSessionWithTemporaryLayout(
+          sessionInput,
+          validation.data.resumeLayoutTemplateId,
+        )
+        : await sessionRepository.createSession(sessionInput);
+      if (!session) {
+        return reply.status(410).send({
+          error: { code: "TEMPLATE_EXPIRED", message: "O estilo visual expirou durante a análise; continue sem reenviar o PDF." },
+        });
       }
       request.log.info(
         {
@@ -491,7 +520,7 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
       return reply.status(201).send({
         sessionId: session.id,
         expiresAt: session.expiresAt,
-        ...(resumeLayoutTemplate ? { usesReferenceLayout: true } : {}),
+        ...(hasResumeLayout ? { usesReferenceLayout: true } : {}),
         ...(options.localTestMode ? { localTestMode: true } : {}),
         ...result,
       });
@@ -691,13 +720,14 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
 
   app.post<{ Params: { sessionId: string } }>("/sessions/:sessionId/documents", {
     onRequest: [rateLimitHook("documentGeneration")],
+    bodyLimit: DOCUMENT_REQUEST_LIMITS.maximumBodyBytes,
   }, async (request, reply) => {
     const validation = validateDocumentRequest(request.body);
     if (!validation.success) {
       return reply.status(400).send({
         error: {
           code: "INVALID_DOCUMENT_REQUEST",
-          message: "Envie somente os identificadores das sugestões aprovadas.",
+          message: "Envie os identificadores aprovados e um texto final válido.",
         },
       });
     }
@@ -714,6 +744,7 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
       const document = await documentService.generateDocument(
         request.params.sessionId,
         validation.data.approvedSuggestionIds,
+        validation.data.finalResumeText,
       );
       return reply
         .header("cache-control", "no-store")
@@ -723,6 +754,7 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
         format: document.format,
         downloadPath: document.downloadPath,
         expiresAt: document.expiresAt,
+        layoutFallback: document.layoutFallback,
       });
     } catch (error) {
       if (error instanceof DocumentServiceError) {
@@ -734,6 +766,7 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
           SESSION_NOT_AVAILABLE: { statusCode: 404, message: "A análise expirou ou não está disponível." },
           PAYMENT_NOT_APPROVED: { statusCode: 409, message: "A cobrança ainda não foi aprovada." },
           INVALID_APPROVED_SUGGESTIONS: { statusCode: 400, message: "As sugestões aprovadas não são válidas." },
+          INVALID_FINAL_RESUME: { statusCode: 400, message: "O texto final excede os limites ou contém caracteres inválidos." },
           DOCUMENT_RENDER_FAILED: { statusCode: 500, message: "Não foi possível montar o PDF." },
           DOCUMENT_STORAGE_UNAVAILABLE: { statusCode: 503, message: "O documento não pôde ser armazenado." },
           DOCUMENT_NOT_AVAILABLE: { statusCode: 404, message: "O documento não está disponível." },
@@ -879,15 +912,20 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
   });
 
   app.get("/features", async (_request, reply) =>
-    reply.header("cache-control", "no-store").send({ resumeLayoutImport: Boolean(options.localTestMode && resumeLayoutService) }),
+    reply.header("cache-control", "no-store").send({ resumeLayoutImport: Boolean(resumeLayoutImportEnabled && resumeLayoutService) }),
   );
 
   app.post<{ Body: Buffer }>("/resume-layouts/import", {
     onRequest: [rateLimitHook("layoutImport")],
   }, async (request, reply) => {
     reply.header("cache-control", "no-store").header("referrer-policy", "no-referrer");
-    if (!options.localTestMode || !resumeLayoutService) {
+    if (!resumeLayoutImportEnabled || !resumeLayoutService) {
       return reply.status(404).send({ error: { code: "FEATURE_NOT_AVAILABLE", message: "A importação de layout não está habilitada neste ambiente." } });
+    }
+    if (sessionRepository && !(await sessionRepository.isReady())) {
+      return reply.status(503).send({
+        error: { code: "PERSISTENCE_UNAVAILABLE", message: "O armazenamento temporário não está disponível neste momento." },
+      });
     }
     if (request.headers["content-type"]?.split(";")[0]?.trim().toLowerCase() !== "application/pdf") {
       return reply.status(415).send({ error: { code: "UNSUPPORTED_MEDIA_TYPE", message: "Envie o arquivo como application/pdf." } });
@@ -907,8 +945,13 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
 
     try {
       const imported = await resumeLayoutService.importPdf(request.body, fileName);
-      const { rawExtraction: _rawExtraction, ...layoutResult } = imported;
-      return reply.status(201).send(layoutResult);
+      const result = {
+        resumeText: imported.resumeText,
+        layoutAvailable: imported.layoutAvailable,
+        expiresAt: imported.expiresAt,
+        ...(imported.layoutAvailable ? { templateId: imported.templateId } : {}),
+      };
+      return reply.status(201).send(result);
     } catch (error) {
       if (error instanceof ResumeLayoutError) {
         request.log.warn({ event: "resume_layout_import_failed", reason: error.code }, "Resume layout import failed");
@@ -925,9 +968,9 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
     onRequest: [rateLimitHook("layoutDelete")],
   }, async (request, reply) => {
     reply.header("cache-control", "no-store");
-    if (!options.localTestMode || !resumeLayoutService) return reply.status(404).send();
+    if (!resumeLayoutImportEnabled || !resumeLayoutService) return reply.status(404).send();
     if (!/^[0-9a-f-]{36}$/i.test(request.params.templateId)) return reply.status(204).send();
-    resumeLayoutService.deleteTemplate(request.params.templateId);
+    await resumeLayoutService.deleteTemplate(request.params.templateId);
     return reply.status(204).send();
   });
 

@@ -55,7 +55,15 @@ test("reports unavailable schema without leaking database errors", async () => {
   const repository = new PostgresSessionRepository(database);
 
   assert.equal(await repository.isReady(), false);
-  assert.match(database.calls[0]!.sql, /SELECT id, resume_layout_template FROM analysis_sessions LIMIT 0/);
+  assert.match(database.calls[0]!.sql, /SELECT id, resume_layout_template, document_layout_fallback FROM analysis_sessions LIMIT 0/);
+});
+
+test("requires the temporary layout table to be available before reporting readiness", async () => {
+  const database = new FakeDatabase();
+  const repository = new PostgresSessionRepository(database);
+
+  assert.equal(await repository.isReady(), true);
+  assert.match(database.calls[1]!.sql, /SELECT id, template, expires_at FROM temporary_resume_layouts LIMIT 0/);
 });
 
 test("creates a temporary analysis session with a database-generated expiration", async () => {
@@ -129,6 +137,73 @@ test("stores only the visual template with a session and retrieves it for PDF ge
   const stored = await repository.findActiveSession("4e4f8a8c-7c1f-4fa7-a5a5-83eb983437ea");
   assert.deepEqual(stored?.resumeLayoutTemplate, resumeLayoutTemplate);
   assert.match(database.calls[1]!.sql, /resume_layout_template/);
+});
+
+test("persists temporary visual templates without source text and applies database expiration", async () => {
+  const database = new FakeDatabase();
+  const expiresAt = new Date("2026-01-02T00:00:00.000Z");
+  database.result = { rows: [{ expires_at: expiresAt }], rowCount: 1 };
+  const repository = new PostgresSessionRepository(database);
+
+  assert.equal(await repository.storeTemporaryResumeLayout("layout-id", resumeLayoutTemplate), expiresAt);
+  assert.match(database.calls[0]!.sql, /INSERT INTO temporary_resume_layouts/);
+  assert.match(database.calls[0]!.sql, /NOW\(\) \+ INTERVAL '24 hours'/);
+  assert.equal(database.calls[0]!.values[0], "layout-id");
+  assert.equal(database.calls[0]!.values[1], JSON.stringify(resumeLayoutTemplate));
+  assert.equal(database.calls[0]!.values.some((value) => String(value).includes("Currículo")), false);
+
+  database.result = { rows: [{ template: resumeLayoutTemplate }], rowCount: 1 };
+  assert.deepEqual(await repository.findTemporaryResumeLayout("layout-id"), resumeLayoutTemplate);
+  assert.match(database.calls[1]!.sql, /expires_at > NOW\(\)/);
+
+  database.result = { rows: [], rowCount: 1 };
+  assert.equal(await repository.deleteExpiredTemporaryResumeLayouts(), 1);
+  assert.match(database.calls[2]!.sql, /expires_at <= NOW\(\)/);
+});
+
+test("associates and consumes a temporary layout atomically when creating a session", async () => {
+  const database = new FakeDatabase();
+  database.result = {
+    rows: [{
+      id: "session-with-layout",
+      created_at: new Date("2026-01-01T00:00:00.000Z"),
+      expires_at: new Date("2026-01-02T00:00:00.000Z"),
+    }],
+    rowCount: 1,
+  };
+  const repository = new PostgresSessionRepository(database);
+
+  const session = await repository.createSessionWithTemporaryLayout({
+    jobDescription: "Vaga",
+    resume: "Texto confirmado",
+    analysis,
+    usage,
+  }, "layout-id");
+
+  assert.equal(session?.id, "session-with-layout");
+  assert.match(database.calls[0]!.sql, /DELETE FROM temporary_resume_layouts[\s\S]*RETURNING template/);
+  assert.match(database.calls[0]!.sql, /INSERT INTO analysis_sessions/);
+  assert.match(database.calls[0]!.sql, /claimed_layout\.template/);
+  assert.match(database.calls[0]!.sql, /expires_at > NOW\(\)/);
+  assert.match(database.calls[0]!.sql, /INTERVAL '24 hours'/);
+  assert.deepEqual(database.calls[0]!.values, [
+    null,
+    "Vaga",
+    "Texto confirmado",
+    JSON.stringify(analysis),
+    usage.inputTokens,
+    usage.outputTokens,
+    usage.estimatedCostUsd,
+    "layout-id",
+  ]);
+
+  database.result = { rows: [], rowCount: 0 };
+  assert.equal(await repository.createSessionWithTemporaryLayout({
+    jobDescription: "Vaga",
+    resume: "Texto confirmado",
+    analysis,
+    usage,
+  }, "expired-layout-id"), null);
 });
 
 test("loads only active analysis sessions", async () => {
@@ -234,30 +309,31 @@ test("clears source and analysis data after document creation and starts a 24h f
   database.result = { rows: [{ id: "session-1" }], rowCount: 1 };
   const repository = new PostgresSessionRepository(database);
 
-  const updated = await repository.markDocumentGenerated("session-1", "private/key.pdf");
+  const updated = await repository.markDocumentGenerated("session-1", "private/key.pdf", true);
 
   assert.equal(updated, true);
   assert.match(database.calls[0]!.sql, /job_description = NULL/);
   assert.match(database.calls[0]!.sql, /resume = NULL/);
   assert.match(database.calls[0]!.sql, /analysis_result = NULL/);
   assert.match(database.calls[0]!.sql, /resume_layout_template = NULL/);
+  assert.match(database.calls[0]!.sql, /document_layout_fallback = \$3/);
   assert.match(database.calls[0]!.sql, /INTERVAL '24 hours'/);
   assert.match(database.calls[0]!.sql, /orders\.status = 'approved'/);
-  assert.deepEqual(database.calls[0]!.values, ["session-1", "private/key.pdf"]);
+  assert.deepEqual(database.calls[0]!.values, ["session-1", "private/key.pdf", true]);
 });
 
 test("loads a generated document only while its private download window is active", async () => {
   const database = new FakeDatabase();
   const expiresAt = new Date("2026-01-02T00:00:00.000Z");
   database.result = {
-    rows: [{ id: "session-1", document_storage_key: "private/key.pdf", expires_at: expiresAt }],
+    rows: [{ id: "session-1", document_storage_key: "private/key.pdf", expires_at: expiresAt, document_layout_fallback: true }],
     rowCount: 1,
   };
   const repository = new PostgresSessionRepository(database);
 
   const document = await repository.findGeneratedDocument("session-1");
 
-  assert.deepEqual(document, { sessionId: "session-1", storageKey: "private/key.pdf", expiresAt });
+  assert.deepEqual(document, { sessionId: "session-1", storageKey: "private/key.pdf", expiresAt, layoutFallback: true });
   assert.match(database.calls[0]!.sql, /status = 'document_ready'/);
   assert.match(database.calls[0]!.sql, /expires_at > NOW\(\)/);
   assert.deepEqual(database.calls[0]!.values, ["session-1"]);
@@ -455,6 +531,10 @@ test("creates the required Neon schema and foreign-key retention behavior", asyn
     new URL("../../migrations/003_resume_layout_template.sql", import.meta.url),
     "utf8",
   );
+  const fallbackMigration = await readFile(
+    new URL("../../migrations/004_document_layout_fallback.sql", import.meta.url),
+    "utf8",
+  );
 
   assert.match(migration, /CREATE TABLE IF NOT EXISTS analysis_sessions/);
   assert.match(migration, /CREATE TABLE IF NOT EXISTS orders/);
@@ -467,4 +547,5 @@ test("creates the required Neon schema and foreign-key retention behavior", asyn
   assert.equal(paymentMigration.toLowerCase().includes("payer_email"), false);
   assert.match(layoutMigration, /ADD COLUMN IF NOT EXISTS resume_layout_template jsonb/);
   assert.match(layoutMigration, /resume_layout_template IS NULL/);
+  assert.match(fallbackMigration, /document_layout_fallback boolean NOT NULL DEFAULT false/);
 });

@@ -45,8 +45,6 @@ function wrapPdfText(
   return lines;
 }
 
-type TextSection = { title: string; lines: string[]; sidebar: boolean };
-
 function headingKind(value: string): { title: string; sidebar: boolean } | undefined {
   const normalized = value.trim().replace(/[:\s]+$/, "").toLocaleLowerCase("pt-BR");
   const patterns: Array<[RegExp, string, boolean]> = [
@@ -68,24 +66,8 @@ function headingKind(value: string): { title: string; sidebar: boolean } | undef
   return undefined;
 }
 
-function splitResumeSections(lines: string[]): { name: string; sections: TextSection[] } {
-  const nameIndex = lines.findIndex((line) => line.trim().length > 0);
-  const name = nameIndex >= 0 ? lines[nameIndex]!.trim() : "Currículo";
-  const bodyLines = nameIndex >= 0 ? lines.filter((_, index) => index !== nameIndex) : lines;
-  const sections: TextSection[] = [{ title: "", lines: [], sidebar: false }];
-  for (const line of bodyLines) {
-    const heading = headingKind(line);
-    if (heading) {
-      sections.push({ title: heading.title, lines: [], sidebar: heading.sidebar });
-    } else {
-      sections[sections.length - 1]!.lines.push(line);
-    }
-  }
-  return { name, sections: sections.filter((section) => section.title || section.lines.some((line) => line.trim())) };
-}
-
-function textTokens(value: string): string[] {
-  return value.normalize("NFD").replace(/\p{M}/gu, "").toLocaleLowerCase("pt-BR").match(/[\p{L}\p{N}]+/gu) ?? [];
+function comparableText(value: string): string {
+  return value.replace(/\s+/gu, " ").trim();
 }
 
 async function preflight(pdf: Buffer, sourceText: string): Promise<void> {
@@ -118,11 +100,7 @@ async function preflight(pdf: Buffer, sourceText: string): Promise<void> {
       }
       outputText += `${items.map((item) => item.str).join(" ")} `;
     }
-    const counts = new Map<string, number>();
-    for (const token of textTokens(outputText)) counts.set(token, (counts.get(token) ?? 0) + 1);
-    const expected = new Map<string, number>();
-    for (const token of textTokens(sourceText)) expected.set(token, (expected.get(token) ?? 0) + 1);
-    for (const [token, count] of expected) if ((counts.get(token) ?? 0) < count) throw new Error("resume_text_missing");
+    if (comparableText(outputText) !== comparableText(sourceText)) throw new Error("resume_text_changed");
   } catch {
     throw new ResumeLayoutError("render_failed");
   } finally {
@@ -132,21 +110,16 @@ async function preflight(pdf: Buffer, sourceText: string): Promise<void> {
 
 export async function renderLayoutTextResumePdf(template: ResumeLayoutTemplate, resumeText: string): Promise<Buffer> {
   if (!resumeText.trim() || Array.from(resumeText).length > 80_000) throw new ResumeLayoutError("render_failed");
-  const { name, sections } = splitResumeSections(resumeText.replace(/\r\n?/g, "\n").split("\n"));
+  const sourceLines = resumeText.replace(/\r\n?/g, "\n").split("\n");
+  const nameIndex = sourceLines.findIndex((line) => line.trim().length > 0);
+  const name = nameIndex >= 0 ? sourceLines[nameIndex]! : "";
+  const headerName = Array.from(name).length <= 120 ? name : "";
   const sidebarWidth = Math.max(135, Math.min(210, template.columns.sidebarWidthPt));
   const gutter = Math.max(14, Math.min(30, template.columns.gapPt));
   const margin = Math.max(24, Math.min(48, template.page.marginPt));
   const mainX = sidebarWidth + gutter;
   const mainWidth = PAGE_WIDTH - mainX - margin;
-  const sidebarX = 20;
-  const sidebarContentWidth = sidebarWidth - 40;
   const bodyFontSize = Math.max(9, Math.min(12, template.typography.bodyPt));
-  const sidebarCandidates = sections.filter((section) => section.sidebar);
-  const sidebarLength = sidebarCandidates.reduce((total, section) =>
-    total + section.title.length + section.lines.reduce((lineTotal, line) => lineTotal + line.length, 0), 0);
-  const sidebarLineCount = sidebarCandidates.reduce((total, section) => total + section.lines.filter((line) => line.trim()).length, 0);
-  const sidebarSections = sidebarLength <= 450 && sidebarLineCount <= 24 ? sidebarCandidates : [];
-  const mainSections = sections.filter((section) => !sidebarSections.includes(section));
 
   const document = new PDFDocument({
     size: "A4",
@@ -163,44 +136,20 @@ export async function renderLayoutTextResumePdf(template: ResumeLayoutTemplate, 
 
   let pageNumber = 0;
   let cursorY = 0;
-  let overflowOnSidebar = false;
+  let sidebarY = 38;
   const addPage = () => {
     if (pageNumber >= 30) throw new ResumeLayoutError("render_failed");
     document.addPage({ size: "A4" });
     pageNumber += 1;
     document.rect(0, 0, sidebarWidth, PAGE_HEIGHT).fill(template.palette.sidebar);
-    let sidebarY = 38;
-    for (const section of sidebarSections) {
-      if (section.title) {
-        if (sidebarY + 30 > PAGE_BOTTOM) { overflowOnSidebar = true; break; }
-        document.font("Helvetica-Bold").fontSize(8).fillColor("#D2DED9")
-          .text(section.title.toLocaleUpperCase("pt-BR"), sidebarX, sidebarY, { width: sidebarContentWidth });
-        sidebarY += 15;
-      }
-      for (const line of section.lines) {
-        if (!line.trim()) { sidebarY += 5; continue; }
-        const lines = wrapPdfText(document, line.trim(), sidebarContentWidth, "Helvetica", 8.7);
-        for (const wrapped of lines) {
-          if (sidebarY + 13 > PAGE_BOTTOM) { overflowOnSidebar = true; break; }
-          document.font("Helvetica").fontSize(8.7).fillColor("#FFFFFF")
-            .text(wrapped, sidebarX, sidebarY, { width: sidebarContentWidth, lineBreak: false });
-          sidebarY += 12.3;
-        }
-        sidebarY += 2;
-        if (overflowOnSidebar) break;
-      }
-      sidebarY += 12;
-      if (overflowOnSidebar) break;
-    }
-    if (overflowOnSidebar) throw new ResumeLayoutError("render_failed");
+    sidebarY = 38;
     if (pageNumber === 1) {
       document.rect(sidebarWidth, 0, PAGE_WIDTH - sidebarWidth, template.header.heightPt).fill(template.palette.headerApprox);
-      const displayName = name.length <= 120 ? name : "Currículo";
       let fontSize = Math.max(20, Math.min(30, template.typography.namePt));
-      let nameLines = wrapPdfText(document, displayName.toLocaleUpperCase("pt-BR"), mainWidth - 12, "Helvetica-Bold", fontSize);
+      let nameLines = wrapPdfText(document, headerName, mainWidth - 12, "Helvetica-Bold", fontSize);
       while (nameLines.length > 4 && fontSize > 12) {
         fontSize -= 1;
-        nameLines = wrapPdfText(document, displayName.toLocaleUpperCase("pt-BR"), mainWidth - 12, "Helvetica-Bold", fontSize);
+        nameLines = wrapPdfText(document, headerName, mainWidth - 12, "Helvetica-Bold", fontSize);
       }
       nameLines.forEach((line, index) => {
         document.font("Helvetica-Bold").fontSize(fontSize).fillColor("#16342E")
@@ -213,6 +162,21 @@ export async function renderLayoutTextResumePdf(template: ResumeLayoutTemplate, 
   };
   const ensureSpace = (height: number) => {
     if (cursorY + height > PAGE_BOTTOM) addPage();
+  };
+  const drawSidebarLine = (value: string, heading: boolean) => {
+    if (!value.trim()) { sidebarY += 5; return; }
+    const font = heading ? "Helvetica-Bold" : "Helvetica";
+    const fontSize = heading ? 8.5 : 8.7;
+    const lineHeight = fontSize * 1.4;
+    const lines = wrapPdfText(document, value.trim(), sidebarWidth - 40, font, fontSize);
+    if (heading) sidebarY += sidebarY > 42 ? 9 : 0;
+    for (const line of lines) {
+      if (sidebarY + lineHeight > PAGE_BOTTOM) addPage();
+      document.font(font).fontSize(fontSize).fillColor(heading ? "#D2DED9" : "#FFFFFF")
+        .text(line, 20, sidebarY, { width: sidebarWidth - 40, lineBreak: false });
+      sidebarY += lineHeight;
+    }
+    sidebarY += heading ? 5 : 2;
   };
   const drawBodyLine = (value: string, options: { heading?: boolean; indent?: number } = {}) => {
     if (!value.trim()) { cursorY += 7; return; }
@@ -243,10 +207,14 @@ export async function renderLayoutTextResumePdf(template: ResumeLayoutTemplate, 
 
   try {
     addPage();
-    if (name.length > 120) drawBodyLine(name);
-    for (const section of mainSections) {
-      if (section.title) drawBodyLine(section.title.toLocaleUpperCase("pt-BR"), { heading: true });
-      for (const line of section.lines) drawBodyLine(line);
+    let useSidebar = false;
+    for (let index = 0; index < sourceLines.length; index += 1) {
+      if (index === nameIndex && headerName) continue;
+      const line = sourceLines[index]!;
+      const heading = headingKind(line);
+      if (heading) useSidebar = heading.sidebar;
+      if (useSidebar) drawSidebarLine(line, Boolean(heading));
+      else drawBodyLine(line, { heading: Boolean(heading) });
     }
     document.end();
   } catch (error) {

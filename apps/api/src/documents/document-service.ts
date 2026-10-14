@@ -7,7 +7,7 @@ import type {
   StoredAnalysisSession,
 } from "../persistence/session-repository.js";
 import { createDocumentAccessToken, verifyDocumentAccessToken } from "./document-access-token.js";
-import { ApprovedSuggestionsError, buildFinalResume } from "./document-content.js";
+import { ApprovedSuggestionsError, buildFinalResume, validateFinalResumeText } from "./document-content.js";
 import { renderResumePdf } from "./pdf-renderer.js";
 import { renderLayoutTextResumePdf } from "../resume-layout/layout-text-pdf-renderer.js";
 import type { ResumeLayoutTemplate } from "../resume-layout/resume-layout-types.js";
@@ -17,6 +17,7 @@ export type DocumentServiceErrorCode =
   | "SESSION_NOT_AVAILABLE"
   | "PAYMENT_NOT_APPROVED"
   | "INVALID_APPROVED_SUGGESTIONS"
+  | "INVALID_FINAL_RESUME"
   | "DOCUMENT_RENDER_FAILED"
   | "DOCUMENT_STORAGE_UNAVAILABLE"
   | "DOCUMENT_NOT_AVAILABLE";
@@ -32,6 +33,7 @@ export type StoredDocumentReference = {
   sessionId: string;
   storageKey: string;
   expiresAt: Date;
+  layoutFallback?: boolean;
 };
 
 export interface DocumentRepository extends Pick<
@@ -58,6 +60,7 @@ export type GeneratedDocumentResponse = {
   downloadPath: string;
   expiresAt: Date;
   created: boolean;
+  layoutFallback: boolean;
 };
 
 export type PdfRenderer = (resume: string, layoutTemplate?: ResumeLayoutTemplate) => Promise<Buffer>;
@@ -96,6 +99,7 @@ export class DocumentService {
       downloadPath: `/documents/${encodeURIComponent(reference.sessionId)}?token=${encodeURIComponent(token)}`,
       expiresAt: reference.expiresAt,
       created,
+      layoutFallback: reference.layoutFallback ?? false,
     };
   }
 
@@ -112,6 +116,7 @@ export class DocumentService {
   async generateDocument(
     sessionId: string,
     approvedSuggestionIds: readonly string[],
+    requestedFinalResumeText?: string,
   ): Promise<GeneratedDocumentResponse> {
     if (!isUuid(sessionId)) throw new DocumentServiceError("SESSION_NOT_AVAILABLE");
     await this.ensureRepositoryReady();
@@ -138,8 +143,16 @@ export class DocumentService {
 
     let finalResume: string;
     try {
-      finalResume = buildFinalResume(session.resume, session.analysis, approvedSuggestionIds);
+      const approvedResume = buildFinalResume(session.resume, session.analysis, approvedSuggestionIds);
+      if (requestedFinalResumeText === undefined) {
+        finalResume = approvedResume;
+      } else {
+        const validatedFinalResume = validateFinalResumeText(requestedFinalResumeText);
+        if (validatedFinalResume === undefined) throw new DocumentServiceError("INVALID_FINAL_RESUME");
+        finalResume = validatedFinalResume;
+      }
     } catch (error) {
+      if (error instanceof DocumentServiceError) throw error;
       if (error instanceof ApprovedSuggestionsError) {
         throw new DocumentServiceError("INVALID_APPROVED_SUGGESTIONS");
       }
@@ -147,10 +160,17 @@ export class DocumentService {
     }
 
     let pdf: Buffer;
+    let layoutFallback = false;
     try {
       pdf = await this.renderPdf(finalResume, session.resumeLayoutTemplate);
     } catch {
-      throw new DocumentServiceError("DOCUMENT_RENDER_FAILED");
+      if (!session.resumeLayoutTemplate) throw new DocumentServiceError("DOCUMENT_RENDER_FAILED");
+      try {
+        pdf = await this.renderPdf(finalResume);
+        layoutFallback = true;
+      } catch {
+        throw new DocumentServiceError("DOCUMENT_RENDER_FAILED");
+      }
     }
 
     const storageKey = `${randomUUID()}.pdf`;
@@ -163,7 +183,7 @@ export class DocumentService {
 
     let marked: boolean;
     try {
-      marked = await this.repository.markDocumentGenerated(sessionId, storageKey);
+      marked = await this.repository.markDocumentGenerated(sessionId, storageKey, layoutFallback);
     } catch {
       await this.deleteQuietly(storageKey);
       throw new DocumentServiceError("PERSISTENCE_UNAVAILABLE");

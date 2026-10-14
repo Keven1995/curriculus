@@ -130,6 +130,7 @@ function lineBlocks(
     for (let index = blocks.length - 1; index >= 0; index -= 1) {
       const candidate = blocks[index]!;
       if (Math.abs(candidate.bbox[3] - baseline) <= Math.max(2.5, span.fontSizePt * 0.25)) {
+        if (span.bbox[0] - candidate.bbox[2] > Math.max(24, span.fontSizePt * 2.5)) break;
         block = candidate;
         break;
       }
@@ -245,9 +246,28 @@ function detectSectionHeadings(pages: ExtractedPage[]): Array<{ label: string; p
 export type ExtractedResumeLayout = {
   rawExtraction: RawResumeExtraction;
   template: ResumeLayoutTemplate;
+  resumeText: string;
+  layoutAvailable: boolean;
   detectedSections: Array<{ label: string; pageNumber: number; confidence: number }>;
   fileHash: string;
 };
+
+function normalizeResumeText(pages: readonly string[]): string {
+  return pages
+    .join("\n")
+    .replace(/[\t\f\v ]+/g, " ")
+    .replace(/ *\n */g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function textFromItems(items: readonly unknown[]): string {
+  return items.map((item) => {
+    if (typeof item !== "object" || item === null || !("str" in item) || typeof item.str !== "string") return "";
+    const text = item.str.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
+    return `${text}${"hasEOL" in item && item.hasEOL === true ? "\n" : " "}`;
+  }).join("");
+}
 
 export async function extractPdfLayout(bytes: Buffer, fileName: string, signal?: AbortSignal): Promise<ExtractedResumeLayout> {
   if (bytes.length > RESUME_LAYOUT_LIMITS.maximumPdfBytes) throw new ResumeLayoutError("file_too_large");
@@ -272,6 +292,7 @@ export async function extractPdfLayout(bytes: Buffer, fileName: string, signal?:
     if (document.numPages > RESUME_LAYOUT_LIMITS.maximumPages) throw new ResumeLayoutError("too_many_pages");
 
     const pages: ExtractedPage[] = [];
+    const resumePages: string[] = [];
     let imageCount = 0;
     let totalCharacters = 0;
     let totalBlocks = 0;
@@ -284,6 +305,7 @@ export async function extractPdfLayout(bytes: Buffer, fileName: string, signal?:
         viewport.width < 100 || viewport.height < 100 || viewport.width > 5_000 || viewport.height > 5_000
       ) throw new ResumeLayoutError("invalid_pdf");
       const textContent = await page.getTextContent({ includeMarkedContent: false, disableNormalization: false });
+      resumePages.push(textFromItems(textContent.items as readonly unknown[]));
       const textBlocks = lineBlocks(textContent.items as readonly unknown[], viewport.height, textContent.styles);
       totalBlocks += textBlocks.length;
       totalCharacters += textBlocks.reduce((total, block) => total + Array.from(block.text).length, 0);
@@ -303,7 +325,11 @@ export async function extractPdfLayout(bytes: Buffer, fileName: string, signal?:
         },
       });
     }
-    if (totalCharacters === 0) throw new ResumeLayoutError("no_selectable_text");
+    const resumeText = normalizeResumeText(resumePages);
+    if (!resumeText) throw new ResumeLayoutError("no_selectable_text");
+    if (Array.from(resumeText).length > RESUME_LAYOUT_LIMITS.maximumCharacters) {
+      throw new ResumeLayoutError("text_too_long");
+    }
 
     const template = inferTemplate(pages);
     const firstPage = pages[0]!;
@@ -333,6 +359,8 @@ export async function extractPdfLayout(bytes: Buffer, fileName: string, signal?:
     return {
       rawExtraction,
       template,
+      resumeText,
+      layoutAvailable: template.detection.detectedColumns === 2 && template.detection.confidence >= 0.4,
       detectedSections: detectSectionHeadings(pages),
       fileHash: createHash("sha256").update(bytes).digest("hex"),
     };

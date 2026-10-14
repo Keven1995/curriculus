@@ -1,21 +1,7 @@
-export type ResumeLayoutTemplate = {
-  schemaVersion: "2.0";
-  id: "sidebar-dark-header-color-v1";
-  page: { format: "A4"; widthPt: number; heightPt: number; marginPt: number };
-  palette: { sidebar: string; main: "#FFFFFF"; headerApprox: string; text: "#111111" };
-  columns: { sidebarWidthPt: number; gapPt: number; sidebarRepeats: true };
-  header: { heightPt: number; nameUppercase: true };
-  typography: { namePt: number; sectionPt: number; bodyPt: number };
-  sections: string[];
-  sidebarSections: string[];
-  overflow: { wrapText: true; pageBreak: true; keepExperienceHeadingWithFirstBullet: true };
-  detection: { confidence: number; detectedColumns: 1 | 2; warnings: string[] };
-};
-
 export type ResumeLayoutImportResponse = {
-  templateId: string;
-  template: ResumeLayoutTemplate;
-  detectedSections: Array<{ label: string; pageNumber: number; confidence: number }>;
+  templateId?: string;
+  resumeText: string;
+  layoutAvailable: boolean;
   expiresAt: string;
 };
 
@@ -29,7 +15,6 @@ export class ResumeLayoutClientError extends Error {
 }
 
 const messages: Record<string, string> = {
-  FEATURE_NOT_AVAILABLE: "A importação de layout está habilitada somente no ambiente de teste local.",
   INVALID_PDF: "O PDF está inválido ou corrompido. Confira o arquivo e tente novamente.",
   FILE_TOO_LARGE: "O PDF deve ter no máximo 10 MiB.",
   TOO_MANY_PAGES: "O PDF deve ter no máximo 30 páginas.",
@@ -37,11 +22,11 @@ const messages: Record<string, string> = {
   TEXT_TOO_LONG: "O texto do PDF excede o limite de extração.",
   ENCRYPTED_PDF: "PDFs protegidos por senha não são compatíveis.",
   PROCESSING_TIMEOUT: "A leitura demorou mais que o limite permitido. Tente um PDF menor ou mais simples.",
-  TEMPLATE_EXPIRED: "A importação expirou. Envie o PDF de referência novamente.",
+  TEMPLATE_EXPIRED: "O estilo visual não está mais disponível; vamos continuar com um formato simples, sem exigir novo upload.",
   RATE_LIMITED: "Muitas tentativas. Aguarde um pouco antes de continuar.",
   PAYLOAD_TOO_LARGE: "Os dados enviados excedem o limite permitido.",
-  NETWORK_ERROR: "Não foi possível conectar ao serviço local. Verifique se `npm run dev:local-test` está em execução.",
-  INVALID_RESPONSE: "O serviço local retornou uma resposta inválida.",
+  NETWORK_ERROR: "Não foi possível processar o PDF agora. Tente novamente; seu arquivo continua selecionado.",
+  INVALID_RESPONSE: "Não foi possível processar a resposta do PDF. Tente novamente.",
 };
 
 function apiUrl(options: RequestOptions): string {
@@ -69,9 +54,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function validImportResponse(value: unknown): value is ResumeLayoutImportResponse {
-  if (!isRecord(value) || !isRecord(value.template)) return false;
-  return typeof value.templateId === "string" && value.templateId.length > 0 && value.template.id === "sidebar-dark-header-color-v1" &&
-    Array.isArray(value.detectedSections) && typeof value.expiresAt === "string" && !Number.isNaN(Date.parse(value.expiresAt));
+  if (!isRecord(value)) return false;
+  return typeof value.resumeText === "string" && value.resumeText.trim().length > 0 &&
+    Array.from(value.resumeText).length <= 80_000 && typeof value.layoutAvailable === "boolean" &&
+    (value.templateId === undefined || (typeof value.templateId === "string" && value.templateId.length > 0)) &&
+    (!value.layoutAvailable || typeof value.templateId === "string") &&
+    typeof value.expiresAt === "string" && !Number.isNaN(Date.parse(value.expiresAt));
 }
 
 export async function isResumeLayoutFeatureEnabled(options: RequestOptions = {}): Promise<boolean> {

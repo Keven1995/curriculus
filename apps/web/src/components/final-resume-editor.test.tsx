@@ -31,12 +31,14 @@ const analysis: AnalysisOutput = {
 test.afterEach(() => cleanup());
 
 test("applies only approved suggestions and leaves the final curriculum editable", () => {
+  const drafts: Array<{ text: string; approvedIds: readonly string[] }> = [];
   render(
     <FinalResumeEditor
       originalResume={originalResume}
       analysis={analysis}
       decisions={{ "suggestion-1": "approved" }}
       styles={styles}
+      onDraftChange={(text, approvedIds) => drafts.push({ text, approvedIds })}
     />,
   );
 
@@ -48,6 +50,10 @@ test("applies only approved suggestions and leaves the final curriculum editable
 
   fireEvent.change(editor, { target: { value: "Versão final revisada pela pessoa." } });
   assert.equal(editor.value, "Versão final revisada pela pessoa.");
+  assert.deepEqual(drafts, [
+    { text: "Desenvolvi APIs REST.", approvedIds: ["suggestion-1"] },
+    { text: "Versão final revisada pela pessoa.", approvedIds: ["suggestion-1"] },
+  ]);
 });
 
 test("downloads the edited final text locally as a text file", async () => {

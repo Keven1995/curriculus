@@ -17,12 +17,14 @@ type PixCheckoutProps = {
   localTestMode?: boolean;
   usesReferenceLayout?: boolean;
   approvedSuggestionIds: readonly string[];
+  finalResumeText: string;
+  finalResumeAppliedSuggestionIds: readonly string[];
   styles: Record<string, string>;
   apiBaseUrl?: string;
   fetcher?: typeof fetch;
 };
 
-export function PixCheckout({ sessionId, localTestMode = false, usesReferenceLayout = false, approvedSuggestionIds, styles, apiBaseUrl, fetcher }: PixCheckoutProps) {
+export function PixCheckout({ sessionId, localTestMode = false, usesReferenceLayout = false, approvedSuggestionIds, finalResumeText, finalResumeAppliedSuggestionIds, styles, apiBaseUrl, fetcher }: PixCheckoutProps) {
   const [payerEmail, setPayerEmail] = useState("");
   const [payment, setPayment] = useState<PixPaymentApiResponse | null>(null);
   const [paymentStatus, setPaymentStatus] = useState<PixPaymentStatus | null>(null);
@@ -34,6 +36,10 @@ export function PixCheckout({ sessionId, localTestMode = false, usesReferenceLay
   const [isGenerating, setIsGenerating] = useState(false);
   const paymentTitleRef = useRef<HTMLHeadingElement>(null);
   const requestInFlight = useRef(false);
+  const sortedApprovedIds = [...approvedSuggestionIds].sort();
+  const sortedAppliedIds = [...finalResumeAppliedSuggestionIds].sort();
+  const draftMatchesApprovals = sortedApprovedIds.length === sortedAppliedIds.length &&
+    sortedApprovedIds.every((id, index) => id === sortedAppliedIds[index]);
 
   useEffect(() => {
     if (payment) paymentTitleRef.current?.focus();
@@ -88,13 +94,15 @@ export function PixCheckout({ sessionId, localTestMode = false, usesReferenceLay
   }
 
   async function generateDocument() {
-    if (isGenerating || paymentStatus !== "approved" || document) return;
+    if (isGenerating || paymentStatus !== "approved" || document || !draftMatchesApprovals) return;
     setMessage("");
     setIsGenerating(true);
     try {
-      const result = await createFinalDocument(sessionId, approvedSuggestionIds, { apiBaseUrl, fetcher });
+      const result = await createFinalDocument(sessionId, approvedSuggestionIds, finalResumeText, { apiBaseUrl, fetcher });
       setDocument(result);
-      setMessage("Seu currículo final em PDF está pronto para baixar.");
+      setMessage(result.layoutFallback
+        ? "Não foi possível reaplicar o estilo visual do PDF original. Geramos o PDF com um formato simples e o conteúdo revisado foi preservado."
+        : "Seu currículo final em PDF está pronto para baixar.");
     } catch (error) {
       setMessage(error instanceof PaymentClientError ? error.message : "Não foi possível gerar o currículo.");
     } finally {
@@ -103,13 +111,15 @@ export function PixCheckout({ sessionId, localTestMode = false, usesReferenceLay
   }
 
   async function generateLocalTestPdf() {
-    if (!localTestMode || isGenerating || document || approvedSuggestionIds.length === 0) return;
+    if (!localTestMode || isGenerating || document || approvedSuggestionIds.length === 0 || !draftMatchesApprovals) return;
     setMessage("");
     setIsGenerating(true);
     try {
-      const result = await createLocalTestDocument(sessionId, approvedSuggestionIds, { apiBaseUrl, fetcher });
+      const result = await createLocalTestDocument(sessionId, approvedSuggestionIds, finalResumeText, { apiBaseUrl, fetcher });
       setDocument(result);
-      setMessage("PDF de teste gerado. Nenhum pagamento real foi feito.");
+      setMessage(result.layoutFallback
+        ? "O PDF de teste foi gerado com um formato simples porque o estilo original não pôde ser reaplicado. Nenhum pagamento real foi feito."
+        : "PDF de teste gerado. Nenhum pagamento real foi feito.");
     } catch (error) {
       setMessage(error instanceof PaymentClientError ? error.message : "Não foi possível gerar o PDF de teste.");
     } finally {
@@ -131,20 +141,21 @@ export function PixCheckout({ sessionId, localTestMode = false, usesReferenceLay
           <span className={styles.step} aria-hidden="true">04</span>
           <div>
             <h2 id="checkout-title">PDF no ambiente de teste</h2>
-            <p>Gere o documento usando apenas as sugestões que você aprovou.</p>
+            <p>Gere o PDF com o texto revisado no editor e as sugestões que você aprovou e aplicou.</p>
           </div>
         </div>
         <div className={styles.checkoutCard}>
           <p className={styles.checkoutDescription}>
             Sandbox local: a aprovação é simulada. Nenhum Pix real é criado, nenhum e-mail é enviado e nenhum pagamento é cobrado.
           </p>
-          {usesReferenceLayout && <p className={styles.checkoutPrivacy}>O PDF será gerado no layout extraído do PDF que você enviou no início, usando somente as sugestões aprovadas nesta sessão.</p>}
+          {usesReferenceLayout && <p className={styles.checkoutPrivacy}>O PDF usará o layout extraído do PDF enviado no início e o texto revisado no editor, com as sugestões de IA aprovadas e aplicadas.</p>}
+          {!draftMatchesApprovals && <p className={styles.help} role="status">As aprovações mudaram. Aplique novamente as sugestões no editor antes de gerar o PDF.</p>}
           {!document && (
             <button
               className={styles.submitButton}
               type="button"
               onClick={generateLocalTestPdf}
-              disabled={isGenerating || approvedSuggestionIds.length === 0}
+              disabled={isGenerating || approvedSuggestionIds.length === 0 || !draftMatchesApprovals}
             >
               {isGenerating ? "Gerando PDF de teste…" : "Gerar PDF de teste (sem cobrança)"}
             </button>
@@ -191,9 +202,10 @@ export function PixCheckout({ sessionId, localTestMode = false, usesReferenceLay
           Total <strong>R$ 1,99</strong>
         </p>
         <p className={styles.checkoutDescription}>
-          Após a confirmação do pagamento, você poderá gerar um PDF com o currículo original e somente as sugestões que aprovar. O arquivo ficará disponível por 24 horas.
+          Após a confirmação do pagamento, o PDF será gerado com o texto final do editor, incluindo os ajustes manuais e as sugestões aprovadas que você aplicou. O arquivo ficará disponível por 24 horas.
         </p>
-        {usesReferenceLayout && <p className={styles.checkoutPrivacy}>O PDF final usará também o layout visual extraído do PDF de referência que você enviou no início; o conteúdo continuará sendo o currículo desta sessão com apenas as sugestões aprovadas.</p>}
+        {!draftMatchesApprovals && <p className={styles.help} role="status">As aprovações mudaram. Aplique novamente as sugestões no editor antes de gerar o PDF.</p>}
+        {usesReferenceLayout && <p className={styles.checkoutPrivacy}>O PDF final usará também o layout visual extraído do PDF de referência. O conteúdo será o texto revisado no editor, com as sugestões de IA aprovadas e aplicadas.</p>}
         <p className={styles.checkoutPrivacy}>
           O e-mail é enviado ao Mercado Pago para criar a cobrança e não é gravado no Curriculus.
         </p>
@@ -268,7 +280,7 @@ export function PixCheckout({ sessionId, localTestMode = false, usesReferenceLay
               </button>
             )}
             {paymentStatus === "approved" && !document && (
-              <button className={styles.submitButton} type="button" onClick={generateDocument} disabled={isGenerating}>
+              <button className={styles.submitButton} type="button" onClick={generateDocument} disabled={isGenerating || !draftMatchesApprovals}>
                 {isGenerating ? "Gerando PDF…" : "Gerar currículo final em PDF"}
               </button>
             )}

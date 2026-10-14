@@ -159,20 +159,30 @@ test("exposes local layout import and accepts the original PDF as raw bytes", as
         return {
           templateId: "4e4f8a8c-7c1f-4fa7-a5a5-83eb983437ea",
           template: { id: "sidebar-dark-header-color-v1" },
+          resumeText: "Texto extraído do PDF.",
+          layoutAvailable: true,
           rawExtraction: { pages: [] },
           detectedSections: [],
           expiresAt: new Date(Date.now() + 60_000).toISOString(),
         } as never;
       },
-      getTemplate() { return undefined; },
-      discardTextExtraction() {},
-      deleteTemplate() { return true; },
-      clear() {},
+      async getTemplate() { return null; },
+      async deleteTemplate() { return true; },
+      isBackedBy() { return false; },
     },
   });
   context.after(() => app.close());
 
   const capabilities = await app.inject({ method: "GET", url: "/features" });
+  const preflight = await app.inject({
+    method: "OPTIONS",
+    url: "/resume-layouts/import",
+    headers: {
+      origin: "http://localhost:3000",
+      "access-control-request-method": "POST",
+      "access-control-request-headers": "content-type,x-file-name",
+    },
+  });
   const imported = await app.inject({
     method: "POST",
     url: "/resume-layouts/import",
@@ -183,11 +193,17 @@ test("exposes local layout import and accepts the original PDF as raw bytes", as
     payload: importPayload,
   });
   assert.deepEqual(capabilities.json(), { resumeLayoutImport: true });
+  assert.equal(preflight.statusCode, 204);
+  assert.equal(preflight.headers["access-control-allow-origin"], "http://localhost:3000");
+  assert.match(preflight.headers["access-control-allow-headers"] ?? "", /x-file-name/i);
   assert.equal(imported.statusCode, 201);
   assert.ok(Buffer.isBuffer(importedBytes));
   assert.equal(importedBytes?.length, importPayload.length);
   assert.equal(importedName, "referência.pdf");
   assert.equal("rawExtraction" in imported.json(), false);
+  assert.equal("template" in imported.json(), false);
+  assert.equal(imported.json().resumeText, "Texto extraído do PDF.");
+  assert.equal(imported.json().layoutAvailable, true);
 });
 
 test("attaches only the server-extracted layout template to the analysis session", async (context) => {
@@ -206,6 +222,7 @@ test("attaches only the server-extracted layout template to the analysis session
     detection: { confidence: 0.55, detectedColumns: 2, warnings: [] },
   };
   let storedInput: CreateAnalysisSession | undefined;
+  let associatedTemplateId: string | undefined;
   let modelInput: Record<string, unknown> | undefined;
   const app = createApp({
     localTestMode: true,
@@ -220,17 +237,17 @@ test("attaches only the server-extracted layout template to the analysis session
     },
     sessionRepository: {
       async isReady() { return true; },
-      async createSession(input) {
+      async createSessionWithTemporaryLayout(input, id) {
         storedInput = input;
+        associatedTemplateId = id;
         return { id: "session-with-layout", createdAt: new Date(), expiresAt: new Date(Date.now() + 60_000) };
       },
     } as never,
     resumeLayoutService: {
       async importPdf() { throw new Error("not used in this test"); },
-      getTemplate(id) { return id === templateId ? template : undefined; },
-      discardTextExtraction() {},
-      deleteTemplate() { return true; },
-      clear() {},
+      async getTemplate(id) { return id === templateId ? template : null; },
+      async deleteTemplate() { return true; },
+      isBackedBy() { return false; },
     },
   });
   context.after(() => app.close());
@@ -243,7 +260,8 @@ test("attaches only the server-extracted layout template to the analysis session
 
   assert.equal(response.statusCode, 201);
   assert.equal(response.json().usesReferenceLayout, true);
-  assert.deepEqual(storedInput?.resumeLayoutTemplate, template);
+  assert.equal(storedInput?.resumeLayoutTemplate, undefined);
+  assert.equal(associatedTemplateId, templateId);
   assert.equal("resumeLayoutTemplateId" in (modelInput ?? {}), false);
 });
 
@@ -268,9 +286,9 @@ test("requires an explicit secure CORS origin in production and adds safe respon
       sessionRepository: null,
       production: true,
       webOrigin: "https://curriculus.example",
-      resumeLayoutService: { importPdf: async () => ({} as never), getTemplate: () => undefined, discardTextExtraction: () => {}, deleteTemplate: () => true, clear: () => {} },
+      resumeLayoutImportEnabled: true,
     }),
-    /Local resume layout import must never be enabled in production/,
+    /Resume PDF intake requires a configured layout extraction service and persistent database storage/,
   );
   const app = createApp({
     analysisService: null,
@@ -440,7 +458,7 @@ test("creates a pending Pix charge only after explicit email submission and neve
     },
     documentService: {
       async generateDocument() {
-        return { format: "pdf" as const, downloadPath: "/", expiresAt: new Date(), created: true };
+        return { format: "pdf" as const, downloadPath: "/", expiresAt: new Date(), created: true, layoutFallback: false };
       },
       async downloadDocument() { return Buffer.from("pdf"); },
       async deleteExpiredDocuments() { return 0; },
@@ -510,7 +528,7 @@ test("maps provider failures to a safe response without exposing payment details
     },
     documentService: {
       async generateDocument() {
-        return { format: "pdf" as const, downloadPath: "/", expiresAt: new Date(), created: true };
+        return { format: "pdf" as const, downloadPath: "/", expiresAt: new Date(), created: true, layoutFallback: false };
       },
       async downloadDocument() { return Buffer.from("pdf"); },
       async deleteExpiredDocuments() { return 0; },
@@ -701,20 +719,21 @@ test("returns only the server-side payment state for the session", async (contex
   assert.equal(response.body.includes("provider-id"), false);
 });
 
-test("generates a PDF link only from approved suggestion IDs and serves it privately", async (context) => {
-  let requested: { sessionId: string; approvedSuggestionIds: readonly string[] } | undefined;
+test("generates a PDF link from validated approval IDs and final text, then serves it privately", async (context) => {
+  let requested: { sessionId: string; approvedSuggestionIds: readonly string[]; finalResumeText: string | undefined } | undefined;
   let downloaded: { sessionId: string; token: string } | undefined;
   const app = createApp({
     analysisService: null,
     sessionRepository: null,
     documentService: {
-      async generateDocument(sessionId: string, approvedSuggestionIds: readonly string[]) {
-        requested = { sessionId, approvedSuggestionIds };
+      async generateDocument(sessionId: string, approvedSuggestionIds: readonly string[], finalResumeText?: string) {
+        requested = { sessionId, approvedSuggestionIds, finalResumeText };
         return {
           format: "pdf" as const,
           downloadPath: "/documents/4e4f8a8c-7c1f-4fa7-a5a5-83eb983437ea?token=signed-capability",
           expiresAt: new Date("2026-01-02T00:00:00.000Z"),
           created: true,
+          layoutFallback: false,
         };
       },
       async downloadDocument(sessionId: string, token: string) {
@@ -729,7 +748,7 @@ test("generates a PDF link only from approved suggestion IDs and serves it priva
   const generated = await app.inject({
     method: "POST",
     url: "/sessions/4e4f8a8c-7c1f-4fa7-a5a5-83eb983437ea/documents",
-    payload: { approvedSuggestionIds: ["experience-1"] },
+    payload: { approvedSuggestionIds: ["experience-1"], finalResumeText: "Final edited resume." },
   });
   const download = await app.inject({
     method: "GET",
@@ -740,11 +759,13 @@ test("generates a PDF link only from approved suggestion IDs and serves it priva
   assert.deepEqual(requested, {
     sessionId: "4e4f8a8c-7c1f-4fa7-a5a5-83eb983437ea",
     approvedSuggestionIds: ["experience-1"],
+    finalResumeText: "Final edited resume.",
   });
   assert.deepEqual(generated.json(), {
     format: "pdf",
     downloadPath: "/documents/4e4f8a8c-7c1f-4fa7-a5a5-83eb983437ea?token=signed-capability",
     expiresAt: "2026-01-02T00:00:00.000Z",
+    layoutFallback: false,
   });
   assert.equal(download.statusCode, 200);
   assert.equal(download.headers["content-type"], "application/pdf");
@@ -779,13 +800,19 @@ test("rejects document payloads containing resume text and keeps generation gate
     url: "/sessions/4e4f8a8c-7c1f-4fa7-a5a5-83eb983437ea/documents",
     payload: { approvedSuggestionIds: [], resume: "forged resume" },
   });
+  const invalidFinalText = await app.inject({
+    method: "POST",
+    url: "/sessions/4e4f8a8c-7c1f-4fa7-a5a5-83eb983437ea/documents",
+    payload: { approvedSuggestionIds: [], finalResumeText: "x".repeat(80_001) },
+  });
   const unpaid = await app.inject({
     method: "POST",
     url: "/sessions/4e4f8a8c-7c1f-4fa7-a5a5-83eb983437ea/documents",
-    payload: { approvedSuggestionIds: [] },
+    payload: { approvedSuggestionIds: [], finalResumeText: "Conteúdo não autorizado" },
   });
 
   assert.equal(invalid.statusCode, 400);
+  assert.equal(invalidFinalText.statusCode, 400);
   assert.equal(unpaid.statusCode, 409);
   assert.equal(unpaid.json().error.code, "PAYMENT_NOT_APPROVED");
   assert.equal(calls, 1);
@@ -798,7 +825,7 @@ test("does not serve a PDF without a bearer token", async (context) => {
     sessionRepository: null,
     documentService: {
       async generateDocument() {
-        return { format: "pdf" as const, downloadPath: "/", expiresAt: new Date(), created: true };
+        return { format: "pdf" as const, downloadPath: "/", expiresAt: new Date(), created: true, layoutFallback: false };
       },
       async downloadDocument() {
         calls += 1;
@@ -1087,7 +1114,7 @@ test("does not spend a model call before the database schema is ready", async (c
   assert.equal(calls, 0);
 });
 
-test("rejects request bodies larger than 256 KiB", async (context) => {
+test("rejects request bodies larger than 640 KiB", async (context) => {
   const app = createApp({ analysisService: null, sessionRepository: null });
   context.after(() => app.close());
 
@@ -1096,7 +1123,7 @@ test("rejects request bodies larger than 256 KiB", async (context) => {
     url: "/analyses",
     payload: {
       jobDescription: "vaga",
-      resume: "r".repeat(270_000),
+      resume: "r".repeat(700_000),
       dataNoticeAcknowledged: true,
     },
   });

@@ -3,6 +3,7 @@
 import React, { useState } from "react";
 import {
   buildResumeWithApprovedSuggestions,
+  approvedSuggestionIds,
   type AnalysisOutput,
   type SuggestionDecisions,
 } from "../lib/analysis-client";
@@ -12,6 +13,7 @@ type FinalResumeEditorProps = {
   analysis: AnalysisOutput;
   decisions: SuggestionDecisions;
   styles: Record<string, string>;
+  onDraftChange?: (resumeText: string, appliedSuggestionIds: readonly string[]) => void;
 };
 
 export function FinalResumeEditor({
@@ -19,16 +21,24 @@ export function FinalResumeEditor({
   analysis,
   decisions,
   styles,
+  onDraftChange,
 }: FinalResumeEditorProps) {
   const [resumeText, setResumeText] = useState(originalResume);
+  const [appliedIds, setAppliedIds] = useState<string[]>([]);
   const [statusMessage, setStatusMessage] = useState("");
+  const currentApprovedIds = approvedSuggestionIds(analysis, decisions);
+  const isApprovalSnapshotCurrent = currentApprovedIds.length === appliedIds.length &&
+    currentApprovedIds.every((id) => appliedIds.includes(id));
   const approvedCount = analysis.suggestions.filter(
     (suggestion) => decisions[suggestion.id] === "approved",
   ).length;
   const hasApprovedSuggestions = approvedCount > 0;
 
   function applyApprovedSuggestions() {
-    setResumeText(buildResumeWithApprovedSuggestions(originalResume, analysis, decisions));
+    const nextText = buildResumeWithApprovedSuggestions(originalResume, analysis, decisions);
+    setResumeText(nextText);
+    setAppliedIds(currentApprovedIds);
+    onDraftChange?.(nextText, currentApprovedIds);
     setStatusMessage("Sugestões aprovadas aplicadas. Revise o currículo completo antes de baixar.");
   }
 
@@ -49,7 +59,7 @@ export function FinalResumeEditor({
         <span className={styles.step} aria-hidden="true">03</span>
         <div>
           <h2 id="final-resume-title">Monte e salve seu currículo</h2>
-          <p>Revise o texto completo, faça outros ajustes se quiser e baixe uma cópia no seu dispositivo.</p>
+          <p>Revise o texto completo. Os ajustes feitos aqui também serão usados no PDF final.</p>
         </div>
       </div>
 
@@ -59,21 +69,29 @@ export function FinalResumeEditor({
           id="final-resume"
           rows={18}
           value={resumeText}
+          maxLength={80_000}
           onChange={(event) => {
-            setResumeText(event.target.value);
+            const nextText = event.target.value;
+            setResumeText(nextText);
+            onDraftChange?.(nextText, appliedIds);
             setStatusMessage("");
           }}
         />
         <p className={styles.help}>
-          Para inserir as sugestões aprovadas, clique no botão antes de baixar. Aplicar novamente reconstrói o texto a partir do currículo original e substitui as edições manuais desta caixa.
+          Para inserir as sugestões aprovadas no PDF, clique no botão antes de baixar. As edições manuais feitas depois também irão para o PDF. Se mudar as aprovações, aplique novamente; isso reconstrói o texto a partir do currículo original e substitui as edições manuais desta caixa. Limite de 80.000 caracteres.
         </p>
+        {!isApprovalSnapshotCurrent && (
+          <p className={styles.status} role="status">
+            As aprovações mudaram. Atualize o texto conforme as aprovações atuais antes de gerar o PDF.
+          </p>
+        )}
         {statusMessage && <p className={styles.status} role="status">{statusMessage}</p>}
         <div className={styles.finalResumeActions}>
           <button
             className={styles.finalResumeApplyButton}
             type="button"
             onClick={applyApprovedSuggestions}
-            disabled={!hasApprovedSuggestions}
+            disabled={!hasApprovedSuggestions && isApprovalSnapshotCurrent}
           >
             Aplicar sugestões aprovadas ({approvedCount})
           </button>

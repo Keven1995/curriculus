@@ -10,6 +10,7 @@ import type {
   SessionRepository,
   StoredAnalysisSession,
 } from "../src/persistence/session-repository.js";
+import type { ResumeLayoutTemplate } from "../src/resume-layout/resume-layout-types.js";
 
 type SessionEntry = {
   status: "analysis_ready" | "document_ready";
@@ -22,6 +23,7 @@ export class EphemeralSessionRepository implements SessionRepository {
   readonly sessions = new Map<string, SessionEntry>();
   readonly orders = new Map<string, OrderRecord>();
   readonly orderIdsBySession = new Map<string, string>();
+  readonly temporaryResumeLayouts = new Map<string, { template: ResumeLayoutTemplate; expiresAt: Date }>();
 
   constructor(private readonly now: () => number = Date.now) {}
 
@@ -39,6 +41,43 @@ export class EphemeralSessionRepository implements SessionRepository {
     const session: StoredAnalysisSession = { ...input, ...reference, status: "analysis_ready" };
     this.sessions.set(reference.id, { status: "analysis_ready", analysis: session, document: null });
     return reference;
+  }
+
+  async createSessionWithTemporaryLayout(
+    input: CreateAnalysisSession,
+    templateId: string,
+  ): Promise<SessionReference | null> {
+    const template = await this.findTemporaryResumeLayout(templateId);
+    if (!template) return null;
+    const reference = await this.createSession({ ...input, resumeLayoutTemplate: template });
+    await this.deleteTemporaryResumeLayout(templateId);
+    return reference;
+  }
+
+  async storeTemporaryResumeLayout(templateId: string, template: ResumeLayoutTemplate): Promise<Date> {
+    const expiresAt = new Date(this.now() + 24 * 60 * 60_000);
+    this.temporaryResumeLayouts.set(templateId, { template: structuredClone(template), expiresAt });
+    return expiresAt;
+  }
+
+  async findTemporaryResumeLayout(templateId: string): Promise<ResumeLayoutTemplate | null> {
+    const entry = this.temporaryResumeLayouts.get(templateId);
+    if (!entry || entry.expiresAt.getTime() <= this.now()) return null;
+    return structuredClone(entry.template);
+  }
+
+  async deleteTemporaryResumeLayout(templateId: string): Promise<boolean> {
+    return this.temporaryResumeLayouts.delete(templateId);
+  }
+
+  async deleteExpiredTemporaryResumeLayouts(): Promise<number> {
+    let deleted = 0;
+    for (const [id, entry] of this.temporaryResumeLayouts) {
+      if (entry.expiresAt.getTime() > this.now()) continue;
+      this.temporaryResumeLayouts.delete(id);
+      deleted += 1;
+    }
+    return deleted;
   }
 
   async findActiveSession(id: string): Promise<StoredAnalysisSession | null> {
@@ -126,7 +165,7 @@ export class EphemeralSessionRepository implements SessionRepository {
     return true;
   }
 
-  async markDocumentGenerated(id: string, storageKey: string): Promise<boolean> {
+  async markDocumentGenerated(id: string, storageKey: string, layoutFallback = false): Promise<boolean> {
     if (!storageKey.trim()) return false;
     const entry = this.sessions.get(id);
     const order = await this.findOrderBySessionId(id);
@@ -141,6 +180,7 @@ export class EphemeralSessionRepository implements SessionRepository {
       sessionId: id,
       storageKey,
       expiresAt: new Date(this.now() + 24 * 60 * 60_000),
+      layoutFallback,
     };
     entry.status = "document_ready";
     entry.analysis = null;

@@ -144,8 +144,8 @@ const errorMessages: Record<string, string> = {
   ANALYSIS_FAILED: "Não foi possível concluir a análise. Tente novamente mais tarde.",
   NETWORK_ERROR: "Não foi possível conectar ao serviço. Verifique sua conexão e tente novamente.",
   INVALID_RESPONSE: "O serviço retornou uma resposta inválida. Tente novamente mais tarde.",
-  LAYOUT_IMPORT_NOT_AVAILABLE: "A preservação do layout só está disponível no ambiente de teste local.",
-  TEMPLATE_EXPIRED: "O layout de referência expirou. Envie o PDF novamente antes de analisar.",
+  LAYOUT_IMPORT_NOT_AVAILABLE: "O estilo visual não está disponível. Você pode continuar sem reenviar o PDF.",
+  TEMPLATE_EXPIRED: "O estilo visual expirou. Você pode continuar sem reenviar o PDF.",
 };
 
 function apiErrorCode(payload: unknown): string | undefined {

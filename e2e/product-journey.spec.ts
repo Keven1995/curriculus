@@ -1,4 +1,5 @@
 import { expect, test, type Page, type APIRequestContext } from "@playwright/test";
+import { resolve, sep } from "node:path";
 
 const jobDescription = "Vaga para pessoa desenvolvedora com experiência em Java, construção de APIs REST e liderança de equipes.";
 const resume = "Trabalhei com Java para construir APIs REST. Tenho experiencia com documentacao\ntecnica.";
@@ -11,19 +12,30 @@ async function createAnalysis(page: Page, request: APIRequestContext): Promise<s
   await page.getByLabel(/Descrição da vaga/).fill(jobDescription);
   const pdfFixture = await request.get("http://127.0.0.1:4174/__e2e/resume-fixture.pdf");
   expect(pdfFixture.status()).toBe(200);
-  await page.getByLabel("Anexar currículo em PDF").setInputFiles({
+  const layoutImport = page.waitForResponse((response) =>
+    response.request().method() === "POST" && response.url().endsWith("/resume-layouts/import"),
+  );
+  await page.getByLabel(/Seu currículo em PDF/).setInputFiles({
     name: "curriculo-sintetico.pdf",
     mimeType: "application/pdf",
     buffer: await pdfFixture.body(),
   });
-  await expect(page.getByLabel("Seu currículo em texto")).toHaveValue(resume);
-  await page.getByRole("checkbox", { name: /Li o aviso sobre o uso dos dados/ }).check();
+  await page.getByRole("checkbox", { name: /Li o aviso/ }).check();
   await page.getByRole("button", { name: /Gerar sugestões/ }).click();
+
+  const importResponse = await layoutImport;
+  expect(importResponse.status()).toBe(201);
+  expect(importResponse.headers()["access-control-allow-origin"]).toBe("http://127.0.0.1:4173");
+  const importBody = await importResponse.json() as { resumeText: string; layoutAvailable: boolean; templateId?: string };
+  expect(importBody.layoutAvailable).toBe(true);
+  expect(importBody.templateId).toEqual(expect.any(String));
+  expect(importBody.resumeText.replace(/\s+/gu, " ").trim()).toBe(resume.replace(/\s+/gu, " ").trim());
 
   const response = await analysisResponse;
   expect(response.status()).toBe(201);
   const result = await response.json() as { sessionId: string };
   await expect(page.getByRole("heading", { name: "Revise as sugestões" })).toBeVisible();
+  await expect(page.getByLabel(/Texto extraído do currículo/)).toHaveValue(/Trabalhei com Java/);
   await expect(page.getByText("Desenvolvi APIs REST com Java.")).toBeVisible();
   await expect(page.getByText("experiência com documentação técnica")).toBeVisible();
   return result.sessionId;
@@ -52,16 +64,24 @@ test("presents the new landing page and its clear path to the analysis form", as
   await expect(page.getByLabel(/Descrição da vaga/)).toBeInViewport();
 });
 
-test("completes analysis, review, sandbox Pix webhook, private PDF download and retention", async ({ page, request }) => {
+test("completes browser CORS PDF upload, edited final text, sandbox payment, private download and retention", async ({ page, request }) => {
   const sessionId = await createAnalysis(page, request);
+  const reviewState = await request.get(`http://127.0.0.1:4174/__e2e/inspect/${sessionId}`);
+  expect(await reviewState.json()).toMatchObject({ analysisActive: true, layoutAttached: true });
 
   await page.getByRole("button", { name: "Aprovar sugestão: Experiência" }).click();
   await page.getByRole("button", { name: "Aprovar correção ortográfica: Ortografia e pontuação" }).click();
   await expect(page.getByText("Aprovadas: 2 · Rejeitadas: 0 · Pendentes: 0")).toBeVisible();
+  await page.getByRole("button", { name: "Aplicar sugestões aprovadas (2)" }).click();
+  const finalResumeEditor = page.getByLabel("Currículo final editável");
+  const confirmedFinalText = `${await finalResumeEditor.inputValue()}\nAjuste exclusivo da pessoa usuária.`;
+  await finalResumeEditor.fill(confirmedFinalText);
   await page.getByLabel("E-mail para o pagamento Pix").fill("e2e@example.test");
   await page.getByRole("button", { name: "Gerar código Pix de R$ 1,99" }).click();
   await expect(page.getByRole("heading", { name: "Pix gerado" })).toBeVisible();
   await expect(page.getByLabel("Código Pix copia e cola")).toHaveValue(/.+/);
+  const duringPayment = await request.get(`http://127.0.0.1:4174/__e2e/inspect/${sessionId}`);
+  expect(await duringPayment.json()).toMatchObject({ analysisActive: true, layoutAttached: true });
 
   const approval = await request.post("http://127.0.0.1:4174/__e2e/approve", {
     data: { sessionId },
@@ -83,11 +103,26 @@ test("completes analysis, review, sandbox Pix webhook, private PDF download and 
   const { readFile } = await import("node:fs/promises");
   const pdf = await readFile(pdfPath!);
   expect(pdf.subarray(0, 4).toString("ascii")).toBe("%PDF");
+  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const standardFontDataUrl = `${resolve(process.cwd(), "node_modules/pdfjs-dist/standard_fonts")}${sep}`;
+  const parsed = await pdfjs.getDocument({ data: new Uint8Array(pdf), isEvalSupported: false, useSystemFonts: true, standardFontDataUrl }).promise;
+  try {
+    let finalPdfText = "";
+    for (let pageNumber = 1; pageNumber <= parsed.numPages; pageNumber += 1) {
+      const page = await parsed.getPage(pageNumber);
+      const content = await page.getTextContent();
+      finalPdfText += `${content.items.map((item) => "str" in item ? item.str : "").join(" ")} `;
+    }
+    expect(finalPdfText.replace(/\s+/gu, " ").trim()).toBe(confirmedFinalText.replace(/\s+/gu, " ").trim());
+  } finally {
+    await parsed.destroy();
+  }
 
   const inspected = await request.get(`http://127.0.0.1:4174/__e2e/inspect/${sessionId}`);
   expect(inspected.status()).toBe(200);
   expect(await inspected.json()).toMatchObject({
     analysisActive: false,
+    layoutAttached: false,
     documentActive: true,
     orderStatus: "approved",
     payerEmailSentToProvider: true,
@@ -108,6 +143,7 @@ test("deletes a temporary analysis session from the browser and keeps no source 
   expect(inspected.status()).toBe(200);
   expect(await inspected.json()).toMatchObject({
     analysisActive: false,
+    layoutAttached: false,
     documentActive: false,
     orderStatus: null,
     payerEmailPersisted: false,

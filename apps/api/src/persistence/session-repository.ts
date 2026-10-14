@@ -2,6 +2,7 @@ import type { AnalysisOutput } from "../analyses/analysis-output.js";
 import type { AnalysisRequest } from "../analyses/analysis-request.js";
 import type { AnalysisUsage } from "../analyses/analysis-service.js";
 import type { ResumeLayoutTemplate } from "../resume-layout/resume-layout-types.js";
+import type { ResumeLayoutTemplateStore } from "../resume-layout/resume-layout-store.js";
 
 export type QueryResult<Row extends Record<string, unknown>> = {
   rows: Row[];
@@ -41,6 +42,7 @@ export type GeneratedDocumentReference = {
   sessionId: string;
   storageKey: string;
   expiresAt: Date;
+  layoutFallback?: boolean;
 };
 
 export type SessionDeletionReference = {
@@ -69,9 +71,10 @@ export type OrderRecord = {
   checkoutExpiresAt: Date;
 };
 
-export interface SessionRepository {
+export interface SessionRepository extends ResumeLayoutTemplateStore {
   isReady(): Promise<boolean>;
   createSession(input: CreateAnalysisSession): Promise<SessionReference>;
+  createSessionWithTemporaryLayout(input: CreateAnalysisSession, templateId: string): Promise<SessionReference | null>;
   findActiveSession(id: string): Promise<StoredAnalysisSession | null>;
   findSessionDeletionReference(id: string): Promise<SessionDeletionReference | null>;
   deleteSessionData(
@@ -83,7 +86,7 @@ export interface SessionRepository {
   findExpiredDocuments(): Promise<ExpiredDocumentReference[]>;
   findActiveDocumentStorageKeys(): Promise<string[]>;
   deleteExpiredDocumentRecord(id: string): Promise<boolean>;
-  markDocumentGenerated(id: string, storageKey: string): Promise<boolean>;
+  markDocumentGenerated(id: string, storageKey: string, layoutFallback?: boolean): Promise<boolean>;
   findGeneratedDocument(id: string): Promise<GeneratedDocumentReference | null>;
   createPendingOrder(sessionId: string): Promise<OrderRecord | null>;
   savePixPayment(
@@ -157,7 +160,10 @@ export class PostgresSessionRepository implements SessionRepository {
   async isReady(): Promise<boolean> {
     try {
       await this.database.query<SessionRow>(
-        "SELECT id, resume_layout_template FROM analysis_sessions LIMIT 0",
+        "SELECT id, resume_layout_template, document_layout_fallback FROM analysis_sessions LIMIT 0",
+      );
+      await this.database.query<SessionRow>(
+        "SELECT id, template, expires_at FROM temporary_resume_layouts LIMIT 0",
       );
       await this.database.query<SessionRow>(
         "SELECT id, pix_qr_code, pix_qr_code_base64 FROM orders LIMIT 0",
@@ -201,6 +207,91 @@ export class PostgresSessionRepository implements SessionRepository {
       createdAt: asDate(row.created_at),
       expiresAt: asDate(row.expires_at),
     };
+  }
+
+  async createSessionWithTemporaryLayout(
+    input: CreateAnalysisSession,
+    templateId: string,
+  ): Promise<SessionReference | null> {
+    const result = await this.database.query<SessionRow>(
+      `WITH claimed_layout AS (
+         DELETE FROM temporary_resume_layouts
+          WHERE id = $8 AND expires_at > NOW()
+         RETURNING template
+       ), inserted_session AS (
+         INSERT INTO analysis_sessions (
+           job_url,
+           job_description,
+           resume,
+           analysis_result,
+           input_tokens,
+           output_tokens,
+           estimated_cost_usd,
+           resume_layout_template,
+           expires_at
+         )
+         SELECT $1, $2, $3, $4::jsonb, $5, $6, $7, claimed_layout.template,
+                NOW() + INTERVAL '24 hours'
+           FROM claimed_layout
+         RETURNING id, created_at, expires_at
+       )
+       SELECT id, created_at, expires_at FROM inserted_session`,
+      [
+        input.jobUrl ?? null,
+        input.jobDescription,
+        input.resume,
+        JSON.stringify(input.analysis),
+        input.usage.inputTokens,
+        input.usage.outputTokens,
+        input.usage.estimatedCostUsd,
+        templateId,
+      ],
+    );
+    const row = result.rows[0];
+    if (!row) return null;
+    return {
+      id: String(row.id),
+      createdAt: asDate(row.created_at),
+      expiresAt: asDate(row.expires_at),
+    };
+  }
+
+  async storeTemporaryResumeLayout(templateId: string, template: ResumeLayoutTemplate): Promise<Date> {
+    const result = await this.database.query<SessionRow>(
+      `INSERT INTO temporary_resume_layouts (id, template, expires_at)
+       VALUES ($1, $2::jsonb, NOW() + INTERVAL '24 hours')
+       RETURNING expires_at`,
+      [templateId, JSON.stringify(template)],
+    );
+    const row = result.rows[0];
+    if (!row) throw new Error("Could not persist temporary resume layout.");
+    return asDate(row.expires_at);
+  }
+
+  async findTemporaryResumeLayout(templateId: string): Promise<ResumeLayoutTemplate | null> {
+    const result = await this.database.query<SessionRow>(
+      `SELECT template
+         FROM temporary_resume_layouts
+        WHERE id = $1 AND expires_at > NOW()`,
+      [templateId],
+    );
+    const row = result.rows[0];
+    return row?.template ? asJson<ResumeLayoutTemplate>(row.template) : null;
+  }
+
+  async deleteTemporaryResumeLayout(templateId: string): Promise<boolean> {
+    const result = await this.database.query<SessionRow>(
+      "DELETE FROM temporary_resume_layouts WHERE id = $1 RETURNING id",
+      [templateId],
+    );
+    return result.rowCount > 0;
+  }
+
+  async deleteExpiredTemporaryResumeLayouts(): Promise<number> {
+    const result = await this.database.query<SessionRow>(
+      "DELETE FROM temporary_resume_layouts WHERE expires_at <= NOW() RETURNING id",
+    );
+    return result.rowCount;
   }
 
   async findActiveSession(id: string): Promise<StoredAnalysisSession | null> {
@@ -312,7 +403,7 @@ export class PostgresSessionRepository implements SessionRepository {
     return result.rowCount > 0;
   }
 
-  async markDocumentGenerated(id: string, storageKey: string): Promise<boolean> {
+  async markDocumentGenerated(id: string, storageKey: string, layoutFallback = false): Promise<boolean> {
     if (!storageKey.trim()) throw new Error("A document storage key is required.");
 
     const result = await this.database.query<SessionRow>(
@@ -323,6 +414,7 @@ export class PostgresSessionRepository implements SessionRepository {
               resume = NULL,
               analysis_result = NULL,
               resume_layout_template = NULL,
+              document_layout_fallback = $3,
               document_storage_key = $2,
               document_created_at = NOW(),
               expires_at = NOW() + INTERVAL '24 hours'
@@ -333,14 +425,14 @@ export class PostgresSessionRepository implements SessionRepository {
                AND orders.status = 'approved'
           )
         RETURNING id`,
-      [id, storageKey],
+      [id, storageKey, layoutFallback],
     );
     return result.rowCount > 0;
   }
 
   async findGeneratedDocument(id: string): Promise<GeneratedDocumentReference | null> {
     const result = await this.database.query<SessionRow>(
-      `SELECT id, document_storage_key, expires_at
+      `SELECT id, document_storage_key, expires_at, document_layout_fallback
          FROM analysis_sessions
         WHERE id = $1 AND status = 'document_ready' AND expires_at > NOW()`,
       [id],
@@ -351,6 +443,7 @@ export class PostgresSessionRepository implements SessionRepository {
       sessionId: String(row.id),
       storageKey: row.document_storage_key,
       expiresAt: asDate(row.expires_at),
+      layoutFallback: row.document_layout_fallback === true,
     };
   }
 

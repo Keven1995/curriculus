@@ -8,11 +8,11 @@ export type IntakeErrors = Partial<
   Record<"job" | "resume" | "acknowledged", string>
 >;
 
-export function validateIntake(input: IntakeInput): IntakeErrors {
+export function validateIntake(input: IntakeInput, options: { resumePdfSelected?: boolean } = {}): IntakeErrors {
   const errors: IntakeErrors = {};
   if (!input.jobDescription.trim()) errors.job = "Cole a descrição completa da vaga.";
 
-  if (!input.resume.trim()) {
+  if (!input.resume.trim() && !options.resumePdfSelected) {
     errors.resume = "Cole o texto do seu currículo.";
   }
 

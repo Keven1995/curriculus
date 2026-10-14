@@ -98,9 +98,9 @@ test("checks payment status from the API without trusting browser-provided statu
   assert.equal(status, "approved");
 });
 
-test("requests a PDF using only approved suggestion IDs and rejects unsafe download URLs", async () => {
+test("requests a PDF with approved suggestion IDs and validated final text, rejecting unsafe download URLs", async () => {
   let requestBody: Record<string, unknown> | undefined;
-  const document = await createFinalDocument("session-test-id", ["experience-1"], {
+  const document = await createFinalDocument("session-test-id", ["experience-1"], "Manual edits kept in final PDF.", {
     apiBaseUrl: "https://api.example.test",
     fetcher: async (_url, init) => {
       requestBody = JSON.parse(String(init?.body));
@@ -112,11 +112,14 @@ test("requests a PDF using only approved suggestion IDs and rejects unsafe downl
     },
   });
 
-  assert.deepEqual(requestBody, { approvedSuggestionIds: ["experience-1"] });
+  assert.deepEqual(requestBody, {
+    approvedSuggestionIds: ["experience-1"],
+    finalResumeText: "Manual edits kept in final PDF.",
+  });
   assert.equal(document.format, "pdf");
 
   await assert.rejects(
-    createFinalDocument("session-test-id", [], {
+    createFinalDocument("session-test-id", [], "Valid final text", {
       fetcher: async () => new Response(JSON.stringify({
         format: "pdf",
         downloadPath: "https://evil.example/steal",
@@ -125,4 +128,17 @@ test("requests a PDF using only approved suggestion IDs and rejects unsafe downl
     }),
     (error: Error) => error instanceof PaymentClientError && error.code === "INVALID_RESPONSE",
   );
+});
+
+test("rejects oversized or control-character final resume text before making a document request", async () => {
+  let calls = 0;
+  for (const finalResumeText of ["x".repeat(80_001), "bad\u0000text", "   "]) {
+    await assert.rejects(
+      createFinalDocument("session-test-id", [], finalResumeText, {
+        fetcher: async () => { calls += 1; return new Response(); },
+      }),
+      (error: Error) => error instanceof PaymentClientError && error.code === "INVALID_DOCUMENT_REQUEST",
+    );
+  }
+  assert.equal(calls, 0);
 });

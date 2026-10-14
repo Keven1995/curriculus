@@ -71,6 +71,8 @@ export type RawResumeExtraction = {
 export type ResumeLayoutImportResponse = {
   templateId: string;
   template: ResumeLayoutTemplate;
+  resumeText: string;
+  layoutAvailable: boolean;
   rawExtraction: RawResumeExtraction;
   detectedSections: Array<{ label: string; pageNumber: number; confidence: number }>;
   expiresAt: string;
@@ -81,5 +83,5 @@ export const RESUME_LAYOUT_LIMITS = {
   maximumPages: 30,
   maximumCharacters: 80_000,
   maximumTextBlocks: 12_000,
-  templateLifetimeMs: 30 * 60_000,
+  templateLifetimeMs: 24 * 60 * 60_000,
 } as const;

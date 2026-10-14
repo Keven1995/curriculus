@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createApp } from "../src/app.js";
 import { createConfiguredAnalysisService } from "../src/analyses/configured-analysis-service.js";
-import { validateDocumentRequest } from "../src/documents/document-request.js";
+import { DOCUMENT_REQUEST_LIMITS, validateDocumentRequest } from "../src/documents/document-request.js";
 import { DocumentService, DocumentServiceError } from "../src/documents/document-service.js";
 import { PrivateFileDocumentStorage } from "../src/documents/private-file-document-storage.js";
 import { PaymentWebhookService } from "../src/payments/payment-webhook-service.js";
@@ -106,7 +106,7 @@ const documentService = new DocumentService(
 );
 const paymentWebhookSecret = randomBytes(32).toString("base64url");
 const localDocumentLimiter = new InMemoryRateLimiter();
-const resumeLayoutService = new ResumeLayoutService();
+const resumeLayoutService = new ResumeLayoutService(repository);
 
 process.once("exit", () => {
   try {
@@ -134,6 +134,7 @@ const app = createApp({
 app.post<{ Params: { sessionId: string }; Body: unknown }>(
   "/__local-test/sessions/:sessionId/documents",
   {
+    bodyLimit: DOCUMENT_REQUEST_LIMITS.maximumBodyBytes,
     onRequest: async (request, reply) => {
       const decision = localDocumentLimiter.consume("local-test-document", request.ip, {
         limit: 10,
@@ -158,7 +159,7 @@ app.post<{ Params: { sessionId: string }; Body: unknown }>(
       return reply.status(400).send({
         error: {
           code: "INVALID_DOCUMENT_REQUEST",
-          message: "Envie somente os identificadores das sugestões aprovadas.",
+          message: "Envie os identificadores aprovados e um texto final válido.",
         },
       });
     }
@@ -178,6 +179,7 @@ app.post<{ Params: { sessionId: string }; Body: unknown }>(
       const document = await documentService.generateDocument(
         request.params.sessionId,
         validation.data.approvedSuggestionIds,
+        validation.data.finalResumeText,
       );
       return reply
         .header("referrer-policy", "no-referrer")
@@ -186,6 +188,7 @@ app.post<{ Params: { sessionId: string }; Body: unknown }>(
           format: document.format,
           downloadPath: document.downloadPath,
           expiresAt: document.expiresAt,
+          layoutFallback: document.layoutFallback,
         });
     } catch (error) {
       const reason = error instanceof DocumentServiceError ? error.code : "local_test_failure";
@@ -203,13 +206,11 @@ app.post<{ Params: { sessionId: string }; Body: unknown }>(
 const cleanupTimer = setInterval(() => {
   void repository.deleteExpiredSessions();
   void documentService.deleteExpiredDocuments();
+  void repository.deleteExpiredTemporaryResumeLayouts();
 }, 15 * 60_000);
 cleanupTimer.unref();
-const layoutCleanupTimer = setInterval(() => resumeLayoutService.cleanupExpired(), 60_000);
-layoutCleanupTimer.unref();
 app.addHook("onClose", async () => {
   clearInterval(cleanupTimer);
-  clearInterval(layoutCleanupTimer);
   await rm(documentDirectory, { recursive: true, force: true });
 });
 

@@ -4,13 +4,13 @@ import React, { useEffect, useRef, useState, type ChangeEvent, type FormEvent } 
 import {
   AnalysisClientError,
   requestAnalysis,
+  approvedSuggestionIds,
   updateSuggestionDecision,
   type AnalysisApiResponse,
   type SuggestionDecision,
   type SuggestionDecisions,
 } from "../lib/analysis-client";
 import { validateIntake, type IntakeInput } from "../lib/intake";
-import { extractResumeTextFromPdf, ResumePdfError } from "../lib/resume-pdf";
 import { AnalysisPreview } from "./AnalysisPreview";
 import { FinalResumeEditor } from "./FinalResumeEditor";
 import { PixCheckout } from "./PixCheckout";
@@ -18,18 +18,17 @@ import { SessionDataControls } from "./SessionDataControls";
 import {
   deleteImportedLayout,
   importReferencePdf,
-  isResumeLayoutFeatureEnabled,
   ResumeLayoutClientError,
   type ResumeLayoutImportResponse,
 } from "../lib/resume-layout-client";
 
-type SelectedLayoutReference = Pick<ResumeLayoutImportResponse, "templateId" | "template">;
+type SelectedLayoutReference = { templateId: string };
+type ResumeSource = "manual" | "pdf_pending" | "pdf_imported";
 
 type AnalysisFlowProps = {
   styles: Record<string, string>;
   apiBaseUrl?: string;
   fetcher?: typeof fetch;
-  pdfTextExtractor?: typeof extractResumeTextFromPdf;
 };
 
 const emptyForm: IntakeInput = {
@@ -38,20 +37,23 @@ const emptyForm: IntakeInput = {
   acknowledged: false,
 };
 
-export function AnalysisFlow({ styles, apiBaseUrl, fetcher, pdfTextExtractor }: AnalysisFlowProps) {
+export function AnalysisFlow({ styles, apiBaseUrl, fetcher }: AnalysisFlowProps) {
   const [form, setForm] = useState<IntakeInput>(emptyForm);
   const [errors, setErrors] = useState<ReturnType<typeof validateIntake>>({});
   const [message, setMessage] = useState("");
   const [analysisResponse, setAnalysisResponse] = useState<AnalysisApiResponse | null>(null);
   const [decisions, setDecisions] = useState<SuggestionDecisions>({});
+  const [finalResumeText, setFinalResumeText] = useState("");
+  const [finalResumeAppliedSuggestionIds, setFinalResumeAppliedSuggestionIds] = useState<string[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [deletionNotice, setDeletionNotice] = useState(false);
   const [isReadingPdf, setIsReadingPdf] = useState(false);
   const [resumePdfError, setResumePdfError] = useState("");
   const [resumePdfName, setResumePdfName] = useState("");
-  const [layoutFeatureEnabled, setLayoutFeatureEnabled] = useState(false);
+  const [resumePdfFile, setResumePdfFile] = useState<File | null>(null);
+  const [resumeSource, setResumeSource] = useState<ResumeSource>("manual");
   const [layoutReference, setLayoutReference] = useState<SelectedLayoutReference | null>(null);
-  const [layoutImportError, setLayoutImportError] = useState("");
+  const [layoutNotice, setLayoutNotice] = useState("");
   const previewTitleRef = useRef<HTMLHeadingElement>(null);
 
   useEffect(() => {
@@ -64,6 +66,8 @@ export function AnalysisFlow({ styles, apiBaseUrl, fetcher, pdfTextExtractor }: 
     setMessage("");
     setAnalysisResponse(null);
     setDecisions({});
+    setFinalResumeText("");
+    setFinalResumeAppliedSuggestionIds([]);
     setDeletionNotice(false);
     setResumePdfError("");
   }
@@ -75,55 +79,43 @@ export function AnalysisFlow({ styles, apiBaseUrl, fetcher, pdfTextExtractor }: 
 
     setResumePdfError("");
     setResumePdfName("");
-    setLayoutImportError("");
-    setIsReadingPdf(true);
+    setLayoutNotice("");
+    setResumePdfFile(file);
+    setResumeSource("pdf_pending");
+    setResumePdfName(file.name);
     const previousLayout = layoutReference;
     setLayoutReference(null);
     if (previousLayout) {
       await deleteImportedLayout(previousLayout.templateId, { apiBaseUrl, fetcher }).catch(() => undefined);
     }
-    try {
-      const text = await (pdfTextExtractor ?? extractResumeTextFromPdf)(file);
-      setForm((current) => ({ ...current, resume: text }));
-      setErrors((current) => ({ ...current, resume: undefined }));
-      setMessage("");
-      setAnalysisResponse(null);
-      setDecisions({});
-      setDeletionNotice(false);
-      setResumePdfName(file.name);
-      let canPreserveLayout = layoutFeatureEnabled;
-      if (!canPreserveLayout) {
-        canPreserveLayout = await isResumeLayoutFeatureEnabled({ apiBaseUrl, fetcher });
-        setLayoutFeatureEnabled(canPreserveLayout);
-      }
-      if (canPreserveLayout) {
-        try {
-          const imported = await importReferencePdf(file, { apiBaseUrl, fetcher });
-          setLayoutReference({ templateId: imported.templateId, template: imported.template });
-          setLayoutImportError("");
-        } catch (error) {
-          setLayoutImportError(error instanceof ResumeLayoutClientError
-            ? error.message
-            : "Não foi possível importar o visual do PDF. Você pode tentar novamente ou continuar sem o layout.");
-        }
-      }
-    } catch (error) {
-      setResumePdfError(error instanceof ResumePdfError
-        ? error.message
-        : "Não foi possível ler o PDF. Confira o arquivo e tente novamente.");
-    } finally {
-      setIsReadingPdf(false);
+    setErrors({});
+    setMessage("");
+    setAnalysisResponse(null);
+    setDecisions({});
+    setFinalResumeText("");
+    setFinalResumeAppliedSuggestionIds([]);
+    setDeletionNotice(false);
+  }
+
+  function updateResumeText(value: string) {
+    if (resumeSource === "pdf_pending") {
+      const previousLayout = layoutReference;
+      if (previousLayout) void deleteImportedLayout(previousLayout.templateId, { apiBaseUrl, fetcher }).catch(() => undefined);
+      setResumePdfFile(null);
+      setResumePdfName("");
+      setResumeSource("manual");
+      setLayoutReference(null);
+      setResumePdfError("");
+      setLayoutNotice("O PDF não foi processado; o currículo colado será usado com um formato simples.");
     }
+    updateForm("resume", value);
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (isSubmitting) return;
-    if (layoutImportError) {
-      setMessage("O layout do PDF ainda não foi importado. Tente novamente com o arquivo ou escolha continuar sem layout.");
-      return;
-    }
-    const validationErrors = validateIntake(form);
+    const hasPendingPdf = resumeSource === "pdf_pending" && resumePdfFile !== null;
+    const validationErrors = validateIntake(form, { resumePdfSelected: hasPendingPdf });
     setErrors(validationErrors);
 
     if (Object.keys(validationErrors).length > 0) {
@@ -136,20 +128,62 @@ export function AnalysisFlow({ styles, apiBaseUrl, fetcher, pdfTextExtractor }: 
     setDecisions({});
     setIsSubmitting(true);
     try {
-      const response = await requestAnalysis(form, {
-        apiBaseUrl,
-        fetcher,
-        ...(layoutReference ? { resumeLayoutTemplateId: layoutReference.templateId } : {}),
-      });
+      let resume = form.resume.trim();
+      let templateId = layoutReference?.templateId;
+      if (hasPendingPdf && resumePdfFile) {
+        setIsReadingPdf(true);
+        setResumePdfError("");
+        const imported: ResumeLayoutImportResponse = await importReferencePdf(resumePdfFile, { apiBaseUrl, fetcher });
+        resume = imported.resumeText;
+        setForm((current) => ({ ...current, resume }));
+        setResumeSource("pdf_imported");
+        setResumePdfFile(null);
+        if (imported.layoutAvailable && imported.templateId) {
+          templateId = imported.templateId;
+          setLayoutReference({ templateId });
+          setLayoutNotice("Extraímos o currículo. O PDF final tentará preservar o estilo visual original.");
+        } else {
+          templateId = undefined;
+          setLayoutReference(null);
+          setLayoutNotice("Extraímos o conteúdo, mas não foi possível reaplicar o estilo visual deste PDF. O PDF final usará um formato simples.");
+        }
+      }
+      const analysisInput = { ...form, resume };
+      const finalValidationErrors = validateIntake(analysisInput);
+      if (Object.keys(finalValidationErrors).length > 0) {
+        setErrors(finalValidationErrors);
+        setMessage("Revise os campos indicados antes de continuar.");
+        return;
+      }
+
+      const requestOptions = { apiBaseUrl, fetcher, ...(templateId ? { resumeLayoutTemplateId: templateId } : {}) };
+      let response: AnalysisApiResponse;
+      try {
+        response = await requestAnalysis(analysisInput, requestOptions);
+      } catch (error) {
+        if (
+          !(error instanceof AnalysisClientError) ||
+          !["TEMPLATE_EXPIRED", "LAYOUT_IMPORT_NOT_AVAILABLE"].includes(error.code) ||
+          !templateId
+        ) throw error;
+        setLayoutReference(null);
+        setLayoutNotice("O estilo visual expirou antes da análise. Continuaremos sem ele, sem pedir que você envie o PDF novamente.");
+        response = await requestAnalysis(analysisInput, { apiBaseUrl, fetcher });
+      }
+      setFinalResumeText(resume);
+      setFinalResumeAppliedSuggestionIds([]);
       setAnalysisResponse(response);
     } catch (error) {
-      setMessage(
-        error instanceof AnalysisClientError
+      if (error instanceof ResumeLayoutClientError) {
+        setResumePdfError(error.message);
+      } else {
+        setMessage(error instanceof AnalysisClientError
           ? error.message
-          : "Não foi possível concluir a análise. Tente novamente mais tarde.",
-      );
+          : "Não foi possível concluir a análise. Tente novamente mais tarde.");
+      }
     } finally {
       setIsSubmitting(false);
+      setIsReadingPdf(false);
     }
   }
 
@@ -163,18 +197,15 @@ export function AnalysisFlow({ styles, apiBaseUrl, fetcher, pdfTextExtractor }: 
     setMessage("");
     setAnalysisResponse(null);
     setDecisions({});
-    if (layoutReference) void deleteImportedLayout(layoutReference.templateId, { apiBaseUrl, fetcher }).catch(() => undefined);
-    setLayoutReference(null);
-    setLayoutImportError("");
+    setFinalResumeText("");
+    setFinalResumeAppliedSuggestionIds([]);
+    setResumePdfFile(null);
+    setResumeSource("manual");
     setResumePdfName("");
-    setDeletionNotice(true);
-  }
-
-  function continueWithoutLayout() {
     if (layoutReference) void deleteImportedLayout(layoutReference.templateId, { apiBaseUrl, fetcher }).catch(() => undefined);
     setLayoutReference(null);
-    setLayoutImportError("");
-    setMessage("A análise continuará sem reaplicar o visual do PDF de referência.");
+    setLayoutNotice("");
+    setDeletionNotice(true);
   }
 
   return (
@@ -188,8 +219,8 @@ export function AnalysisFlow({ styles, apiBaseUrl, fetcher, pdfTextExtractor }: 
         <div className={styles.sectionHeading}>
           <span className={styles.step} aria-hidden="true">01</span>
           <div>
-            <h2 id="form-title">Vamos começar pelo contexto</h2>
-            <p>Compare o currículo com a vaga e receba também sugestões de ortografia e gramática do português brasileiro.</p>
+            <h2 id="form-title">Adapte seu currículo à vaga</h2>
+            <p>Envie seu currículo em PDF e cole os requisitos da oportunidade. Você revisa cada sugestão antes de gerar o PDF final.</p>
           </div>
         </div>
 
@@ -210,8 +241,7 @@ export function AnalysisFlow({ styles, apiBaseUrl, fetcher, pdfTextExtractor }: 
           </div>
 
           <div className={styles.field}>
-            <label htmlFor="resume">Seu currículo em texto</label>
-            <label htmlFor="resume-pdf">Anexar currículo em PDF <span>(opcional)</span></label>
+            <label htmlFor="resume-pdf">Seu currículo em PDF <span>(recomendado)</span></label>
             <input
               id="resume-pdf"
               type="file"
@@ -221,45 +251,45 @@ export function AnalysisFlow({ styles, apiBaseUrl, fetcher, pdfTextExtractor }: 
               onChange={handleResumePdfChange}
             />
             <p className={styles.help} id="resume-pdf-help">
-              PDF textual de até 10 MiB e 30 páginas. A leitura acontece neste navegador; somente o texto extraído é enviado para análise. PDFs digitalizados como imagem não são compatíveis.
+              PDF de até 10 MiB e 30 páginas. Depois que você confirmar abaixo e iniciar a análise, nosso serviço extrairá o texto e o estilo visual em uma só leitura. PDFs digitalizados como imagem não são compatíveis.
             </p>
-            {isReadingPdf && <p className={styles.status} role="status">Lendo o texto do PDF neste navegador…</p>}
-            {resumePdfName && !isReadingPdf && (
-              <p className={styles.help} role="status">Texto extraído de {resumePdfName}. Revise ou edite abaixo antes de continuar.</p>
-            )}
-            {resumePdfError && <p className={styles.error} role="alert">{resumePdfError}</p>}
-            {layoutReference && (
-              <div className={styles.layoutReferenceNotice}>
-                <strong>Layout vinculado ao PDF final</strong>
-                <p>
-                  O PDF gerado após a revisão usará a sidebar {layoutReference.template.palette.sidebar} e o cabeçalho {layoutReference.template.palette.headerApprox}.
-                  {" "}Detecção aproximada ({Math.round(layoutReference.template.detection.confidence * 100)}%). O conteúdo virá do currículo desta sessão; fotos incorporadas ao PDF não são copiadas.
-                </p>
-                <button className={styles.layoutReferenceButton} type="button" onClick={continueWithoutLayout}>
-                  Remover layout de referência
-                </button>
-              </div>
-            )}
-            {layoutImportError && (
-              <div className={styles.layoutReferenceError} role="alert">
-                <p>O texto foi lido, mas o visual do PDF não foi importado: {layoutImportError}</p>
-                <button className={styles.layoutReferenceButton} type="button" onClick={continueWithoutLayout}>
-                  Continuar sem layout de referência
-                </button>
-              </div>
-            )}
-            {resumePdfName && !layoutFeatureEnabled && !layoutReference && (
+            {resumePdfName && (
               <p className={styles.help} role="status">
-                Neste ambiente, o PDF é usado para extrair texto. A preservação do visual está disponível no teste local (`npm run dev:local-test`).
+                {resumeSource === "pdf_pending" ? `Arquivo selecionado: ${resumePdfName}.` : `Texto extraído de ${resumePdfName}. Você pode revisar o conteúdo abaixo.`}
               </p>
             )}
+            {resumePdfError && (
+              <div className={styles.layoutReferenceError} role="alert">
+                <p>{resumePdfError}</p>
+                <p>Você pode tentar novamente ou colar o currículo em texto abaixo para continuar.</p>
+                {form.resume.trim() && resumeSource === "pdf_pending" && (
+                  <button
+                    className={styles.layoutReferenceButton}
+                    type="button"
+                    onClick={() => {
+                      setResumePdfFile(null);
+                      setResumePdfName("");
+                      setResumeSource("manual");
+                      setResumePdfError("");
+                      setLayoutNotice("Continuaremos com o currículo colado e um formato visual simples.");
+                    }}
+                  >
+                    Continuar com o currículo colado
+                  </button>
+                )}
+              </div>
+            )}
+            {layoutNotice && <p className={styles.status} role="status">{layoutNotice}</p>}
+            <label htmlFor="resume">
+              {resumeSource === "pdf_imported" ? "Texto extraído do currículo (você pode revisar)" : "Ou cole o currículo em texto"}
+            </label>
             <textarea
               id="resume"
               rows={9}
-              placeholder="O texto extraído do PDF aparecerá aqui; você também pode colar ou editar seu currículo..."
+              placeholder={resumeSource === "pdf_pending" ? "O texto do PDF aparecerá aqui depois que você iniciar a análise. Também pode colar o currículo manualmente." : "Cole aqui o conteúdo do seu currículo..."}
               value={form.resume}
               disabled={isSubmitting || isReadingPdf}
-              onChange={(event) => updateForm("resume", event.target.value)}
+              onChange={(event) => updateResumeText(event.target.value)}
               aria-invalid={Boolean(errors.resume)}
               aria-describedby={errors.resume ? "resume-help resume-error" : "resume-help"}
             />
@@ -274,7 +304,7 @@ export function AnalysisFlow({ styles, apiBaseUrl, fetcher, pdfTextExtractor }: 
             <div>
               <h3 id="privacy-title">Seus dados devem servir apenas a este objetivo</h3>
               <p>
-                Currículo e descrição da vaga são usados para gerar sugestões, não para avaliar sua empregabilidade. O texto do PDF é extraído neste navegador e enviado à análise. No teste local, o PDF original também é enviado somente à API local para extrair o visual do PDF final; o arquivo não é guardado em disco. O layout fornece apenas estilo; o conteúdo do PDF final vem do currículo desta sessão e somente as sugestões aprovadas são aplicadas. Fotos incorporadas ao PDF de referência não são reutilizadas. Sessões sem pagamento expiram em 24 horas; após gerar um PDF, currículo, vaga e análise são apagados e o arquivo expira em outras 24 horas. Você também pode pedir a exclusão antecipada abaixo.
+                Currículo e descrição da vaga são usados para gerar sugestões, não para avaliar sua empregabilidade. Após sua confirmação, o PDF é enviado à API do Curriculus e processado em memória uma única vez para extrair texto e estilo; o arquivo original não é armazenado nem enviado ao modelo de IA. O texto segue para análise e o estilo visual compatível fica associado à sessão até gerar o PDF ou a expiração. Ao solicitar o PDF final, o texto revisado no editor é enviado à API para montagem e armazenamento privado temporário; sugestões de IA entram quando aprovadas e aplicadas. Fotos incorporadas ao PDF de referência não são reutilizadas. Sessões sem pagamento expiram em 24 horas; após gerar um PDF, currículo, vaga e análise são apagados e o arquivo expira em outras 24 horas. Você também pode pedir a exclusão antecipada abaixo.
               </p>
               <p className={styles.prototypeNote}>
                 Consulte os <a href="/privacidade">rascunhos da Política de Privacidade</a> e dos <a href="/termos">Termos de Uso</a>. Eles ainda precisam de revisão jurídica e validação dos fornecedores antes de uso público.
@@ -293,15 +323,15 @@ export function AnalysisFlow({ styles, apiBaseUrl, fetcher, pdfTextExtractor }: 
               aria-describedby={errors.acknowledged ? "acknowledgement-error" : undefined}
             />
             <label htmlFor="acknowledged">
-              Li o aviso sobre o uso dos dados e confirmo que não incluí informações sensíveis desnecessárias ou dados de terceiros.
+              Li o aviso e autorizo o processamento do PDF e dos textos para esta análise. Confirmo que não incluí informações sensíveis desnecessárias ou dados de terceiros.
             </label>
           </div>
           {errors.acknowledged && (
             <p className={styles.error} id="acknowledgement-error">{errors.acknowledged}</p>
           )}
 
-          <button className={styles.submitButton} type="submit" disabled={isSubmitting || isReadingPdf || Boolean(layoutImportError)}>
-            {isReadingPdf ? "Lendo PDF…" : isSubmitting ? "Analisando…" : "Gerar sugestões"} <span aria-hidden="true">→</span>
+          <button className={styles.submitButton} type="submit" disabled={isSubmitting || isReadingPdf}>
+            {isReadingPdf ? "Lendo currículo…" : isSubmitting ? "Analisando…" : "Gerar sugestões"} <span aria-hidden="true">→</span>
           </button>
           <p className={styles.submitNote}>
             Você revisa cada sugestão, inclusive as correções de escrita. Depois, pode editar e baixar o currículo em texto sem cobrança; o PDF pago é opcional.
@@ -335,14 +365,18 @@ export function AnalysisFlow({ styles, apiBaseUrl, fetcher, pdfTextExtractor }: 
             analysis={analysisResponse.analysis}
             decisions={decisions}
             styles={styles}
+            onDraftChange={(text, appliedIds) => {
+              setFinalResumeText(text);
+              setFinalResumeAppliedSuggestionIds([...appliedIds]);
+            }}
           />
           <PixCheckout
             sessionId={analysisResponse.sessionId}
             localTestMode={analysisResponse.localTestMode === true}
             usesReferenceLayout={analysisResponse.usesReferenceLayout === true}
-            approvedSuggestionIds={Object.entries(decisions)
-              .filter(([, decision]) => decision === "approved")
-              .map(([id]) => id)}
+            approvedSuggestionIds={approvedSuggestionIds(analysisResponse.analysis, decisions)}
+            finalResumeText={finalResumeText}
+            finalResumeAppliedSuggestionIds={finalResumeAppliedSuggestionIds}
             styles={styles}
             apiBaseUrl={apiBaseUrl}
             fetcher={fetcher}

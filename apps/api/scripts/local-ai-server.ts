@@ -2,6 +2,7 @@ import { createApp } from "../src/app.js";
 import { createConfiguredAnalysisService } from "../src/analyses/configured-analysis-service.js";
 import { DataDeletionService } from "../src/privacy/data-deletion-service.js";
 import { loadEnvironmentFiles } from "../src/load-environment.js";
+import { ResumeLayoutService } from "../src/resume-layout/resume-layout-service.js";
 import { EphemeralSessionRepository } from "./ephemeral-session-repository.js";
 
 if (process.env.NODE_ENV === "production") {
@@ -32,6 +33,8 @@ const app = createApp({
   paymentWebhook: null,
   documentService: null,
   dataDeletionService: new DataDeletionService(repository, null),
+  resumeLayoutService: new ResumeLayoutService(repository),
+  resumeLayoutImportEnabled: true,
   logger: true,
 });
 

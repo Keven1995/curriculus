@@ -82,7 +82,7 @@ class MemoryRepository implements DocumentRepository {
   ready = true;
   session: StoredAnalysisSession | null = makeSession();
   order: OrderRecord | null = makeOrder();
-  generated: { sessionId: string; storageKey: string; expiresAt: Date } | null = null;
+  generated: { sessionId: string; storageKey: string; expiresAt: Date; layoutFallback?: boolean } | null = null;
   expired: Array<{ sessionId: string; storageKey: string; expiresAt: Date }> = [];
   activeDocumentKeys: string[] = [];
   deletedRecords: string[] = [];
@@ -94,12 +94,13 @@ class MemoryRepository implements DocumentRepository {
     return this.generated?.sessionId === id ? this.generated : null;
   }
   async findActiveDocumentStorageKeys() { return this.activeDocumentKeys; }
-  async markDocumentGenerated(id: string, storageKey: string) {
+  async markDocumentGenerated(id: string, storageKey: string, layoutFallback = false) {
     if (id !== sessionId || this.order?.status !== "approved" || !this.session) return false;
     this.generated = {
       sessionId: id,
       storageKey,
       expiresAt: new Date(now.getTime() + 24 * 60 * 60 * 1_000),
+      layoutFallback,
     };
     this.session = null;
     return true;
@@ -165,6 +166,49 @@ test("generates a private PDF from stored source text and only the approved sugg
   assert.equal(repository.generated?.storageKey, storage.writes[0]?.key);
 });
 
+test("uses a validated manually edited final resume only after validating the approved suggestion IDs", async () => {
+  const repository = new MemoryRepository();
+  const storage = new MemoryStorage();
+  const rendered: string[] = [];
+  const service = createService(repository, storage, rendered);
+  const userEditedResume = "Texto final alterado pela pessoa usuária.";
+
+  await service.generateDocument(sessionId, ["suggestion-1"], userEditedResume);
+  assert.deepEqual(rendered, [userEditedResume]);
+
+  const invalidRepository = new MemoryRepository();
+  const invalidStorage = new MemoryStorage();
+  const invalidRendered: string[] = [];
+  const invalidService = createService(invalidRepository, invalidStorage, invalidRendered);
+  await assert.rejects(
+    invalidService.generateDocument(sessionId, ["not-approved"], userEditedResume),
+    (error: Error) => error instanceof DocumentServiceError && error.code === "INVALID_APPROVED_SUGGESTIONS",
+  );
+  assert.deepEqual(invalidRendered, []);
+  assert.equal(invalidStorage.writes.length, 0);
+});
+
+test("rejects invalid final text before rendering and still requires approved payment", async () => {
+  const repository = new MemoryRepository();
+  const storage = new MemoryStorage();
+  const rendered: string[] = [];
+  const service = createService(repository, storage, rendered);
+  await assert.rejects(
+    service.generateDocument(sessionId, [], "x".repeat(80_001)),
+    (error: Error) => error instanceof DocumentServiceError && error.code === "INVALID_FINAL_RESUME",
+  );
+  assert.equal(rendered.length, 0);
+
+  const unpaidRepository = new MemoryRepository();
+  unpaidRepository.order = makeOrder("pending");
+  const unpaidService = createService(unpaidRepository, new MemoryStorage(), rendered);
+  await assert.rejects(
+    unpaidService.generateDocument(sessionId, ["suggestion-1"], "arbitrary text"),
+    (error: Error) => error instanceof DocumentServiceError && error.code === "PAYMENT_NOT_APPROVED",
+  );
+  assert.equal(rendered.length, 0);
+});
+
 test("generates the approved revised text with the same imported two-column visual template", async () => {
   const repository = new MemoryRepository();
   repository.session = { ...makeSession(), resumeLayoutTemplate: referenceLayout };
@@ -199,6 +243,32 @@ test("generates the approved revised text with the same imported two-column visu
   } finally {
     await parsed.destroy();
   }
+});
+
+test("falls back to the standard renderer if the reference layout renderer fails and remembers the fallback", async () => {
+  const repository = new MemoryRepository();
+  repository.session = { ...makeSession(), resumeLayoutTemplate: referenceLayout };
+  const storage = new MemoryStorage();
+  const attempts: Array<ResumeLayoutTemplate | undefined> = [];
+  const service = new DocumentService(
+    repository,
+    storage,
+    "a-private-test-secret-with-at-least-32-characters",
+    async (resume, template) => {
+      attempts.push(template);
+      if (template) throw new Error("unsupported visual template");
+      return Buffer.from(`PDF:${resume}`);
+    },
+    () => now,
+  );
+
+  const generated = await service.generateDocument(sessionId, []);
+  const retried = await service.generateDocument(sessionId, []);
+
+  assert.equal(generated.layoutFallback, true);
+  assert.equal(retried.layoutFallback, true);
+  assert.deepEqual(attempts, [referenceLayout, undefined]);
+  assert.equal(storage.writes.length, 1);
 });
 
 test("does not generate or retain a document before server-side payment approval", async () => {

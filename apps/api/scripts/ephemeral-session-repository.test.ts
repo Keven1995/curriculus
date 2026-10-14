@@ -49,6 +49,7 @@ test("keeps orders separate, clears source content after approved document gener
     sessionId: session.id,
     storageKey,
     expiresAt: new Date(Date.UTC(2026, 0, 2)),
+    layoutFallback: false,
   });
   assert.deepEqual(await repository.findSessionDeletionReference(session.id), {
     sessionId: session.id,

@@ -14,6 +14,7 @@ import type { PixPaymentProvider } from "../src/payments/pix-payment-provider.js
 import { PixPaymentService } from "../src/payments/pix-payment-service.js";
 import type { ProviderPaymentDetails } from "../src/payments/payment-status-provider.js";
 import { EphemeralSessionRepository } from "./ephemeral-session-repository.js";
+import { ResumeLayoutService } from "../src/resume-layout/resume-layout-service.js";
 
 const E2E_WEBHOOK_SECRET = "local-e2e-webhook-secret-only-not-for-deployment";
 const DOCUMENT_SECRET = "local-e2e-document-secret-only-not-for-deployment";
@@ -96,6 +97,7 @@ process.once("exit", () => {
 });
 const storage = new PrivateFileDocumentStorage(documentDirectory);
 const documentService = new DocumentService(repository, storage, DOCUMENT_SECRET);
+const resumeLayoutService = new ResumeLayoutService(repository);
 const paymentWebhook = new PaymentWebhookService(repository, paymentProvider);
 const resumeFixturePdf = await new Promise<Buffer>((resolve, reject) => {
   const pdf = new PDFDocument({ size: "A4" });
@@ -103,7 +105,10 @@ const resumeFixturePdf = await new Promise<Buffer>((resolve, reject) => {
   pdf.on("data", (chunk: Buffer) => chunks.push(chunk));
   pdf.once("error", reject);
   pdf.once("end", () => resolve(Buffer.concat(chunks)));
-  pdf.font("Helvetica").fontSize(11).text("Trabalhei com Java para construir APIs REST. Tenho experiencia com documentacao tecnica.");
+  pdf.font("Helvetica").fontSize(11).text("Trabalhei com Java para construir", 24, 60, { width: 135 });
+  pdf.font("Helvetica").fontSize(11).text("APIs REST.", 24, 78, { width: 135 });
+  pdf.font("Helvetica").fontSize(11).text("Tenho experiencia com", 212, 60, { width: 340 });
+  pdf.font("Helvetica").fontSize(11).text("documentacao tecnica.", 212, 78, { width: 340 });
   pdf.end();
 });
 const app = createApp({
@@ -115,6 +120,8 @@ const app = createApp({
   paymentWebhook: { secret: E2E_WEBHOOK_SECRET, service: paymentWebhook },
   documentService,
   dataDeletionService: new DataDeletionService(repository, storage, paymentProvider),
+  resumeLayoutService,
+  resumeLayoutImportEnabled: true,
 });
 
 app.addHook("onClose", async () => rm(documentDirectory, { recursive: true, force: true }));
@@ -158,6 +165,7 @@ app.get<{ Params: { sessionId: string } }>("/__e2e/inspect/:sessionId", async (r
   const financialOrder = financialOrderId ? await repository.findOrder(financialOrderId) : null;
   return {
     analysisActive: Boolean(entry?.analysis),
+    layoutAttached: Boolean(entry?.analysis?.resumeLayoutTemplate),
     documentActive: Boolean(entry?.document),
     orderStatus: order?.status ?? financialOrder?.status ?? null,
     payerEmailSentToProvider: paymentProvider.receivedPayerEmailCount > 0,
